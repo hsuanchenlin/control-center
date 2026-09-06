@@ -92,3 +92,51 @@ func TestMatchDescription(t *testing.T) {
 		t.Fatalf("description not searched: %v", hits)
 	}
 }
+
+func TestRegistryDoesNotAliasConfigOrResults(t *testing.T) {
+	position := 0
+	minimum := 1.0
+	maximum := 10.0
+	cfg := &config.Config{Tools: []config.Tool{{
+		ID: "tool",
+		Actions: []config.Action{{
+			Args: []string{"run"},
+			Params: []config.Param{{
+				Key: "value", Choices: []string{"one"}, Positional: &position,
+				Min: &minimum, Max: &maximum,
+			}},
+		}},
+	}}}
+	r := New(cfg)
+
+	cfg.Tools[0].Actions[0].Args[0] = "changed"
+	cfg.Tools[0].Actions[0].Params[0].Choices[0] = "changed"
+	position, minimum, maximum = 2, 3, 4
+
+	tool, ok := r.Tool("tool")
+	if !ok {
+		t.Fatal("tool not found")
+	}
+	assertNestedValues(t, tool)
+
+	tool.Actions[0].Args[0] = "returned"
+	tool.Actions[0].Params[0].Choices[0] = "returned"
+	*tool.Actions[0].Params[0].Positional = 5
+	*tool.Actions[0].Params[0].Min = 5
+	*tool.Actions[0].Params[0].Max = 5
+	assertNestedValues(t, r.Tools()[0])
+
+	matched := r.Match("tool")
+	matched[0].Actions[0].Args[0] = "matched"
+	assertNestedValues(t, r.Match("tool")[0])
+}
+
+func assertNestedValues(t *testing.T, tool config.Tool) {
+	t.Helper()
+	action := tool.Actions[0]
+	param := action.Params[0]
+	if action.Args[0] != "run" || param.Choices[0] != "one" ||
+		*param.Positional != 0 || *param.Min != 1 || *param.Max != 10 {
+		t.Fatalf("registry value was mutated: %+v", tool)
+	}
+}

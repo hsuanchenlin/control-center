@@ -19,7 +19,7 @@ type Registry struct {
 func New(cfg *config.Config) *Registry {
 	r := &Registry{byID: make(map[string]int, len(cfg.Tools))}
 	for i, t := range cfg.Tools {
-		r.tools = append(r.tools, t)
+		r.tools = append(r.tools, cloneTool(t))
 		r.byID[t.ID] = i
 	}
 	return r
@@ -28,7 +28,9 @@ func New(cfg *config.Config) *Registry {
 // Tools returns all tools in manifest order.
 func (r *Registry) Tools() []config.Tool {
 	out := make([]config.Tool, len(r.tools))
-	copy(out, r.tools)
+	for i, tool := range r.tools {
+		out[i] = cloneTool(tool)
+	}
 	return out
 }
 
@@ -38,7 +40,7 @@ func (r *Registry) Tool(id string) (config.Tool, bool) {
 	if !ok {
 		return config.Tool{}, false
 	}
-	return r.tools[i], true
+	return cloneTool(r.tools[i]), true
 }
 
 // Match ranks tools against a fuzzy query over id, name, and description.
@@ -73,9 +75,37 @@ func (r *Registry) Match(query string) []config.Tool {
 	})
 	out := make([]config.Tool, len(hits))
 	for i, h := range hits {
-		out[i] = r.tools[h.idx]
+		out[i] = cloneTool(r.tools[h.idx])
 	}
 	return out
+}
+
+func cloneTool(tool config.Tool) config.Tool {
+	actions := make([]config.Action, len(tool.Actions))
+	for i, action := range tool.Actions {
+		action.Args = append([]string(nil), action.Args...)
+		params := make([]config.Param, len(action.Params))
+		for j, param := range action.Params {
+			param.Choices = append([]string(nil), param.Choices...)
+			if param.Positional != nil {
+				value := *param.Positional
+				param.Positional = &value
+			}
+			if param.Min != nil {
+				value := *param.Min
+				param.Min = &value
+			}
+			if param.Max != nil {
+				value := *param.Max
+				param.Max = &value
+			}
+			params[j] = param
+		}
+		action.Params = params
+		actions[i] = action
+	}
+	tool.Actions = actions
+	return tool
 }
 
 // fuzzyScore reports whether every rune of query appears in target in order
