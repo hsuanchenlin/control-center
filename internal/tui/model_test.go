@@ -320,9 +320,9 @@ func TestConfirmEscReturnsToForm(t *testing.T) {
 	m = asModel(t, tm)
 	tm, _ = m.Update(key(tea.KeyEnter)) // form
 	m = asModel(t, tm)
-	key := formStateKey{toolID: "solo", actionName: "run"}
-	m.preserved[key] = form.Values{"n": "3"}
-	tm, _ = m.enterConfirm(m.preserved[key])
+	stateKey := formStateKey{toolID: "solo", actionName: "run"}
+	m.preserved[stateKey] = form.Values{"n": "3"}
+	tm, _ = m.enterConfirm(m.preserved[stateKey])
 	m = asModel(t, tm)
 	if m.screen != screenConfirm {
 		t.Fatalf("screen = %v", m.screen)

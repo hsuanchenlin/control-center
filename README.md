@@ -80,8 +80,8 @@ Rules enforced by `validate`:
   rejected.
 - Every param sets exactly one of `flag` or `positional`.
 - Flags must be single tokens starting with `-` (no spaces, no `=`); values
-  are always passed as a **separate argv element**, so a value can never be
-  reinterpreted as a flag by accident.
+  are always passed as a **separate argv element**. How a child parses a
+  value that itself starts with `-` depends on that child's argument parser.
 - Positional params must be `required` (an empty value would silently shift
   every later positional).
 - `toggle` params are flag-only and are emitted only when true.
