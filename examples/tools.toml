@@ -1,0 +1,176 @@
+# control-center example manifest.
+#
+# Copy to ~/.config/control-center/tools.toml and adapt to your machine.
+# Values marked ADAPT are conservative placeholders: check each tool's own
+# `--help` for the exact current syntax before relying on them.
+#
+# Schema summary (see README.md for the full reference):
+#   [[tool]]            id, name, description, executable, output ("capture"|"passthrough")
+#   [[tool.action]]     name, description, args (fixed argv prefix)
+#   [[tool.action.param]]  key, label, type (text|select|toggle|number|path),
+#                          required, default, choices, min/max, must_exist,
+#                          and exactly one of: flag = "--flag"  or  positional = <index>
+
+# ---------------------------------------------------------------------------
+# EchoForge — media pipeline CLI.
+# Destructive or state-changing actions (update install, settings changes)
+# say so in their descriptions; EchoForge's own confirmations still apply —
+# control-center never bypasses them.
+# ---------------------------------------------------------------------------
+[[tool]]
+id = "echoforge"
+name = "EchoForge"
+description = "media pipeline CLI"
+executable = "echoforge"
+
+[[tool.action]]
+name = "start"
+description = "Start the EchoForge pipeline"
+args = ["start"]
+
+[[tool.action]]
+name = "status"
+description = "Show pipeline status"
+args = ["status"]
+
+[[tool.action.param]]
+key = "verbose"
+label = "Verbose output"
+type = "toggle"
+flag = "--verbose"          # ADAPT: confirm flag name via `echoforge status --help`
+
+[[tool.action]]
+name = "version"
+description = "Print the EchoForge version"
+args = ["version"]
+
+[[tool.action]]
+name = "history"
+description = "Show recent processing history"
+args = ["history"]
+
+[[tool.action.param]]
+key = "limit"
+label = "Max entries"
+description = "How many history entries to show"
+type = "number"
+required = false
+default = "20"
+min = 1
+max = 500
+flag = "--limit"            # ADAPT: confirm flag name via `echoforge history --help`
+
+[[tool.action]]
+name = "logs"
+description = "Tail EchoForge logs"
+args = ["logs"]
+
+[[tool.action.param]]
+key = "level"
+label = "Log level"
+type = "select"
+required = false
+choices = ["debug", "info", "warn", "error"]
+default = "info"
+flag = "--level"            # ADAPT: confirm flag name via `echoforge logs --help`
+
+[[tool.action.param]]
+key = "follow"
+label = "Follow log output"
+type = "toggle"
+flag = "--follow"           # ADAPT
+
+[[tool.action]]
+name = "settings"
+description = "Open EchoForge settings (may modify configuration; EchoForge confirms changes itself)"
+args = ["settings"]
+# ADAPT: if `echoforge settings` is interactive, set output = "passthrough"
+# on this tool or split interactive actions into a second tool entry.
+
+[[tool.action]]
+name = "update-check"
+description = "Check for EchoForge updates (read-only)"
+args = ["update", "--check"]   # ADAPT: confirm subcommand syntax
+
+[[tool.action]]
+name = "update-install"
+description = "Install EchoForge updates — state-changing; EchoForge prompts for its own confirmation"
+args = ["update", "--install"] # ADAPT: confirm subcommand syntax
+
+# ---------------------------------------------------------------------------
+# market-monitor — representative market/report choices.
+# ADAPT: verify markets/reports against `market-monitor --help`.
+# ---------------------------------------------------------------------------
+[[tool]]
+id = "market-monitor"
+name = "Market Monitor"
+description = "daily market reports"
+executable = "market-monitor"
+
+[[tool.action]]
+name = "report"
+description = "Generate a market report"
+args = ["report"]
+
+[[tool.action.param]]
+key = "market"
+label = "Market"
+type = "select"
+required = true
+choices = ["us", "eu", "asia"]   # ADAPT: use the market ids the tool documents
+default = "us"
+flag = "--market"
+
+[[tool.action.param]]
+key = "format"
+label = "Report format"
+type = "select"
+required = false
+choices = ["text", "json"]
+default = "text"
+flag = "--format"                # ADAPT
+
+[[tool.action]]
+name = "quote"
+description = "Quote a single symbol"
+args = ["quote"]
+
+[[tool.action.param]]
+key = "symbol"
+label = "Symbol"
+description = "Ticker symbol, e.g. AAPL"
+type = "text"
+required = true
+positional = 0
+
+# ---------------------------------------------------------------------------
+# sports-scores-cli — representative sport/date choices.
+# ADAPT: verify sports and date flag against `sports-scores-cli --help`.
+# ---------------------------------------------------------------------------
+[[tool]]
+id = "sports-scores"
+name = "Sports Scores"
+description = "game scores by sport and date"
+executable = "sports-scores-cli"
+
+[[tool.action]]
+name = "scores"
+description = "Show scores for a sport"
+args = ["scores"]
+
+[[tool.action.param]]
+key = "sport"
+label = "Sport"
+type = "select"
+required = true
+choices = ["nfl", "nba", "mlb", "nhl", "soccer"]  # ADAPT
+default = "nfl"
+positional = 0
+
+[[tool.action.param]]
+key = "date"
+label = "Date"
+description = "YYYY-MM-DD; empty means today"
+type = "text"
+required = false
+flag = "--date"                # ADAPT
