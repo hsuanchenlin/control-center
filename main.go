@@ -118,7 +118,6 @@ func runTUI(cfg *config.Config) int {
 		Registry:  registry.New(cfg),
 		Runner:    executor.NewRunner(),
 		Clipboard: executor.SystemClipboard{},
-		Clock:     executor.SystemClock{},
 		Terminal:  term,
 	})
 	p := tea.NewProgram(model, tea.WithAltScreen())

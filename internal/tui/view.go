@@ -107,7 +107,9 @@ func (m Model) viewOutput() string {
 	case m.running:
 		header += dimStyle.Render("— running…")
 	case m.result != nil && m.result.Err != nil:
-		header += errStyle.Render("— failed to start: " + m.result.Err.Error())
+		header += errStyle.Render("— failed: " + m.result.Err.Error())
+	case m.result != nil && m.result.Interrupted:
+		header += errStyle.Render(fmt.Sprintf("— interrupted after %s", m.result.Elapsed.Round(1e6)))
 	case m.result != nil && m.result.ExitCode != 0:
 		header += errStyle.Render(fmt.Sprintf("— exit %d in %s", m.result.ExitCode, m.result.Elapsed.Round(1e6)))
 	case m.result != nil:

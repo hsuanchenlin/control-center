@@ -33,7 +33,6 @@ type Deps struct {
 	Registry  *registry.Registry
 	Runner    *executor.Runner
 	Clipboard executor.Clipboard
-	Clock     executor.Clock
 	Terminal  executor.Terminal // required only when a tool uses passthrough
 	// MaxOutputLines bounds the retained child output (default 5000).
 	MaxOutputLines int
@@ -41,11 +40,10 @@ type Deps struct {
 
 // Messages driving the async child lifecycle.
 type (
-	outputTickMsg   time.Time
-	childDoneMsg    executor.Result
-	copiedMsg       struct{ err error }
-	runFailedMsg    struct{ err error }
-	clipUnavailable struct{ err error }
+	outputTickMsg time.Time
+	childDoneMsg  executor.Result
+	copiedMsg     struct{ err error }
+	runFailedMsg  struct{ err error }
 )
 
 // Model is the root Bubble Tea model.
@@ -74,6 +72,7 @@ type Model struct {
 	// output
 	viewport viewport.Model
 	buffer   *executor.LineBuffer
+	rendered int // buffer version last drawn into the viewport
 	running  bool
 	cancel   context.CancelFunc
 	result   *executor.Result
@@ -131,6 +130,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		res := executor.Result(msg)
 		m.result = &res
 		m.running = false
+		m.notice = ""
 		m.refreshViewport()
 		return m, nil
 
@@ -153,6 +153,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		res := executor.Result{Err: msg.err}
 		m.result = &res
 		m.running = false
+		m.notice = ""
 		m.refreshViewport()
 		return m, nil
 	}
@@ -356,6 +357,8 @@ func (m Model) updateConfirm(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) startRun() (tea.Model, tea.Cmd) {
+	m.notice = ""
+	m.rendered = -1
 	if _, err := m.deps.Runner.Resolve(m.spec.Executable); err != nil {
 		res := executor.Result{Err: err}
 		m.result = &res
@@ -427,6 +430,12 @@ func (m *Model) refreshViewport() {
 	if m.buffer == nil {
 		return
 	}
+	version := m.buffer.Version()
+	if m.running && version == m.rendered {
+		// Nothing new arrived since the last tick; skip the rebuild.
+		return
+	}
+	m.rendered = version
 	content := m.buffer.Content()
 	if m.buffer.Dropped() > 0 {
 		content = fmt.Sprintf("… %d earlier line(s) dropped (output is bounded) …\n%s", m.buffer.Dropped(), content)

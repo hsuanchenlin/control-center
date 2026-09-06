@@ -249,3 +249,20 @@ func TestExpandPath(t *testing.T) {
 		t.Fatalf("glob/user expansion leaked: %q", got)
 	}
 }
+
+// The shipped example manifest is what README tells users to copy, so it must
+// stay valid against the schema.
+func TestExampleManifestIsValid(t *testing.T) {
+	path := filepath.Join("..", "..", "examples", "tools.toml")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Parse(data, path)
+	if err != nil {
+		t.Fatalf("examples/tools.toml is invalid: %v", err)
+	}
+	if len(cfg.Tools) == 0 {
+		t.Fatal("examples/tools.toml declares no tools")
+	}
+}

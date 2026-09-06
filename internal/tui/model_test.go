@@ -6,6 +6,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/hsuanchenlin/control-center/internal/config"
@@ -99,7 +100,6 @@ func newTestModel(t *testing.T) (Model, *fakeClipboard) {
 		Registry:  registry.New(cfg),
 		Runner:    runner,
 		Clipboard: clip,
-		Clock:     executor.SystemClock{},
 		Terminal:  nopTerminal{},
 	})
 	m.width, m.height = 100, 40
@@ -408,5 +408,110 @@ func TestQuitFromPaletteViaQ(t *testing.T) {
 	}
 	if m.View() != "" {
 		t.Fatal("quitting view should be empty")
+	}
+}
+
+const passthroughManifest = `
+[[tool]]
+id = "inter"
+name = "Interactive Tool"
+description = "owns the terminal"
+executable = "inter-cli"
+output = "passthrough"
+
+[[tool.action]]
+name = "shell"
+description = "interactive session"
+args = ["shell"]
+`
+
+func TestNoticeIsClearedWhenRunStartsAndFinishes(t *testing.T) {
+	m, _ := newTestModel(t)
+	tm, _ := m.Update(runes("plain"))
+	m = asModel(t, tm)
+	tm, _ = m.Update(key(tea.KeyEnter)) // confirm
+	m = asModel(t, tm)
+	tm, cmd := m.Update(runes("e")) // copy
+	m = asModel(t, tm)
+	tm, _ = m.Update(cmd())
+	m = asModel(t, tm)
+	if m.notice == "" {
+		t.Fatal("copy notice not set")
+	}
+	tm, _ = m.Update(key(tea.KeyEnter)) // run
+	m = asModel(t, tm)
+	if m.notice != "" {
+		t.Fatalf("stale notice carried into the output screen: %q", m.notice)
+	}
+	tm, _ = m.Update(key(tea.KeyCtrlC)) // interrupt notice
+	m = asModel(t, tm)
+	if m.notice == "" {
+		t.Fatal("interrupt notice not set")
+	}
+	tm, _ = m.Update(childDoneMsg(executor.Result{Interrupted: true}))
+	m = asModel(t, tm)
+	if m.notice != "" {
+		t.Fatalf("interrupt notice outlived the child: %q", m.notice)
+	}
+	if v := m.View(); !strings.Contains(v, "interrupted") {
+		t.Fatalf("interrupted run not labelled:\n%s", v)
+	}
+}
+
+func TestRunningOutputFollowsPartialLines(t *testing.T) {
+	m, _ := newTestModel(t)
+	tm, _ := m.Update(runes("plain"))
+	m = asModel(t, tm)
+	tm, _ = m.Update(key(tea.KeyEnter))
+	m = asModel(t, tm)
+	tm, _ = m.Update(key(tea.KeyEnter)) // run
+	m = asModel(t, tm)
+	m.buffer.Write([]byte("progress 10%"))
+	tm, _ = m.Update(outputTickMsg(time.Time{}))
+	m = asModel(t, tm)
+	if !strings.Contains(m.viewport.View(), "progress 10%") {
+		t.Fatalf("viewport missing streamed output:\n%s", m.viewport.View())
+	}
+	m.buffer.Write([]byte("\rprogress 20%"))
+	tm, _ = m.Update(outputTickMsg(time.Time{}))
+	m = asModel(t, tm)
+	if !strings.Contains(m.viewport.View(), "progress 20%") {
+		t.Fatalf("viewport did not follow output appended to the current line:\n%s", m.viewport.View())
+	}
+}
+
+func TestPassthroughWithoutTerminalFailsInsteadOfPanicking(t *testing.T) {
+	cfg, err := config.Parse([]byte(passthroughManifest), "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := New(Deps{
+		Registry: registry.New(cfg),
+		Runner: &executor.Runner{
+			LookPath:        func(name string) (string, error) { return "/usr/bin/" + name, nil },
+			StdinIsTerminal: func() bool { return true },
+		},
+		Clipboard: &fakeClipboard{},
+	})
+	m.width, m.height = 100, 40
+	tm, _ := m.Update(key(tea.KeyEnter)) // single action, no params -> confirm
+	m = asModel(t, tm)
+	if m.screen != screenConfirm {
+		t.Fatalf("screen = %v", m.screen)
+	}
+	tm, cmd := m.Update(key(tea.KeyEnter)) // run
+	m = asModel(t, tm)
+	if cmd == nil {
+		t.Fatal("run produced no command")
+	}
+	msg := cmd()
+	failed, ok := msg.(runFailedMsg)
+	if !ok {
+		t.Fatalf("msg = %#v", msg)
+	}
+	tm, _ = m.Update(failed)
+	m = asModel(t, tm)
+	if v := m.View(); !strings.Contains(v, "terminal boundary") {
+		t.Fatalf("view missing the wiring error:\n%s", v)
 	}
 }

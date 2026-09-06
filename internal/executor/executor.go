@@ -22,13 +22,13 @@ import (
 type Result struct {
 	ExitCode int
 	Elapsed  time.Duration
+	// Interrupted reports that the run ended because its context was
+	// cancelled; the exit code of an interrupted child is not meaningful.
+	Interrupted bool
 	// Err is non-nil only when the process could not be started or waited on;
 	// nonzero exits are reported via ExitCode, not Err.
 	Err error
 }
-
-// Started reports whether the child process was successfully launched.
-func (r Result) Started() bool { return r.Err == nil }
 
 // Clock supplies the current time.
 type Clock interface {
@@ -61,10 +61,20 @@ type Terminal interface {
 	Restore() error
 }
 
+// defaultKillDelay bounds how long a child may ignore SIGINT after
+// cancellation before os/exec escalates to Kill.
+const defaultKillDelay = 5 * time.Second
+
 // Runner launches child processes without a shell.
 type Runner struct {
 	// LookPath resolves the executable; defaults to exec.LookPath.
 	LookPath func(string) (string, error)
+	// Clock measures start and elapsed time; defaults to SystemClock.
+	Clock Clock
+	// KillDelay bounds the wait between the interrupt sent on cancellation
+	// and the kill that follows it, so Wait can never block forever;
+	// defaults to defaultKillDelay.
+	KillDelay time.Duration
 	// Stdin/Stdout/Stderr wire passthrough children to the terminal;
 	// default to the process's own descriptors.
 	Stdin  io.Reader
@@ -80,7 +90,21 @@ type Runner struct {
 }
 
 // NewRunner returns a Runner wired to the real OS.
-func NewRunner() *Runner { return &Runner{} }
+func NewRunner() *Runner { return &Runner{Clock: SystemClock{}} }
+
+func (r *Runner) now() time.Time {
+	if r.Clock != nil {
+		return r.Clock.Now()
+	}
+	return time.Now()
+}
+
+func (r *Runner) killDelay() time.Duration {
+	if r.KillDelay > 0 {
+		return r.KillDelay
+	}
+	return defaultKillDelay
+}
 
 func (r *Runner) lookPath() func(string) (string, error) {
 	if r.LookPath != nil {
@@ -101,9 +125,11 @@ func (r *Runner) Resolve(executable string) (string, error) {
 
 // RunCapture starts the child, streaming stdout and stderr into the provided
 // writers as data arrives, and blocks until it exits or ctx is cancelled.
-// Cancellation interrupts the child (SIGINT via Cancel) before killing it.
+// Cancellation interrupts the child (SIGINT via Cancel) and kills it once
+// KillDelay passes; the result is then reported as Interrupted, not as a
+// failure to start.
 func (r *Runner) RunCapture(ctx context.Context, spec command.Spec, stdout, stderr io.Writer) Result {
-	start := time.Now()
+	start := r.now()
 	path, err := r.Resolve(spec.Executable)
 	if err != nil {
 		return Result{Err: err}
@@ -119,9 +145,14 @@ func (r *Runner) RunCapture(ctx context.Context, spec command.Spec, stdout, stde
 		return Result{Err: fmt.Errorf("start %q: %w", spec.Executable, err)}
 	}
 	code, werr := wait()
-	res := Result{ExitCode: code, Elapsed: time.Since(start)}
-	if werr != nil && code == 0 {
-		res.Err = werr
+	res := Result{ExitCode: code, Elapsed: r.now().Sub(start)}
+	if werr != nil || code != 0 {
+		switch {
+		case ctx.Err() != nil:
+			res.Interrupted = true
+		case werr != nil && code == 0:
+			res.Err = werr
+		}
 	}
 	return res
 }
@@ -135,6 +166,7 @@ func (r *Runner) startReal(ctx context.Context, path string, args []string, stdo
 		}
 		return cmd.Process.Signal(os.Interrupt)
 	}
+	cmd.WaitDelay = r.killDelay()
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	if err := cmd.Start(); err != nil {
@@ -149,6 +181,11 @@ func (r *Runner) startReal(ctx context.Context, path string, args []string, stdo
 		if errors.As(err, &exitErr) {
 			return exitErr.ExitCode(), nil
 		}
+		if cmd.ProcessState != nil {
+			// The child ran to completion; its exit code is authoritative
+			// even when Wait reports a late I/O or cancellation error.
+			return cmd.ProcessState.ExitCode(), nil
+		}
 		return 0, err
 	}, nil
 }
@@ -157,7 +194,10 @@ func (r *Runner) startReal(ctx context.Context, path string, args []string, stdo
 // released, the child runs with the real stdin/stdout/stderr, and the
 // terminal is always restored afterwards, even on error.
 func (r *Runner) RunPassthrough(ctx context.Context, spec command.Spec, term Terminal) Result {
-	start := time.Now()
+	if term == nil {
+		return Result{Err: errors.New("passthrough requires a terminal boundary; this tool cannot run without one")}
+	}
+	start := r.now()
 	path, err := r.Resolve(spec.Executable)
 	if err != nil {
 		return Result{Err: err}
@@ -198,26 +238,37 @@ func (r *Runner) RunPassthrough(ctx context.Context, spec command.Spec, term Ter
 		}
 		return cmd.Process.Signal(os.Interrupt)
 	}
+	cmd.WaitDelay = r.killDelay()
 	cmd.Stdin = stdin
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	runErr := cmd.Run()
 	restore()
-	code := 0
+	res := Result{Elapsed: r.now().Sub(start)}
 	if runErr != nil {
 		var exitErr *exec.ExitError
-		if errors.As(runErr, &exitErr) {
-			code = exitErr.ExitCode()
-		} else {
-			return Result{Err: fmt.Errorf("run %q: %w", spec.Executable, runErr), Elapsed: time.Since(start)}
+		switch {
+		case errors.As(runErr, &exitErr):
+			res.ExitCode = exitErr.ExitCode()
+		case ctx.Err() == nil:
+			res.Err = fmt.Errorf("run %q: %w", spec.Executable, runErr)
+			return res
+		}
+		if ctx.Err() != nil {
+			res.Interrupted = true
 		}
 	}
-	return Result{ExitCode: code, Elapsed: time.Since(start)}
+	return res
 }
 
+// maxLineBytes caps a single retained line, so newline-free output (progress
+// bars, binary data) is split instead of growing one line without bound.
+const maxLineBytes = 64 << 10
+
 // LineBuffer is a bounded, scroll-safe output sink: it retains at most Max
-// lines, dropping the oldest, so fast/large output cannot grow memory without
-// bound. Invalid UTF-8 is replaced at render time by ToValidUTF8.
+// lines of at most maxLineBytes each, dropping the oldest, so fast/large
+// output cannot grow memory without bound. Invalid UTF-8 is replaced at
+// render time by ToValidUTF8.
 type LineBuffer struct {
 	// Max is the retention limit in lines (default 5000).
 	Max int
@@ -227,6 +278,7 @@ type LineBuffer struct {
 	head    int
 	count   int
 	total   int
+	version int
 	partial bool // last retained line lacks a trailing newline
 }
 
@@ -239,42 +291,48 @@ func NewLineBuffer(maxLines int) *LineBuffer {
 }
 
 // Write appends data, splitting on newlines. It never fails and never grows
-// beyond Max retained lines.
+// beyond Max retained lines of maxLineBytes each.
 func (b *LineBuffer) Write(p []byte) (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	start := 0
 	for i, c := range p {
 		if c == '\n' {
-			b.appendLine(p[start:i])
+			b.append(p[start:i], true)
 			start = i + 1
 		}
 	}
 	if start < len(p) {
-		b.appendPartial(p[start:])
+		b.append(p[start:], false)
+	}
+	if len(p) > 0 {
+		b.version++
 	}
 	return len(p), nil
 }
 
-func (b *LineBuffer) appendLine(line []byte) {
-	if b.count > 0 && b.partial {
-		// Continue the unterminated last line.
-		last := (b.head + b.count - 1) % b.Max
-		b.lines[last] = append(b.lines[last], line...)
+// append adds chunk to the retained lines, continuing the current
+// unterminated line when there is one and starting a fresh line whenever the
+// current one reaches maxLineBytes.
+func (b *LineBuffer) append(chunk []byte, terminated bool) {
+	for {
+		if b.count > 0 && b.partial {
+			last := (b.head + b.count - 1) % b.Max
+			n := min(maxLineBytes-len(b.lines[last]), len(chunk))
+			b.lines[last] = append(b.lines[last], chunk[:n]...)
+			chunk = chunk[n:]
+		} else {
+			n := min(maxLineBytes, len(chunk))
+			b.push(chunk[:n])
+			chunk = chunk[n:]
+			b.partial = true
+		}
+		if len(chunk) == 0 {
+			b.partial = !terminated
+			return
+		}
 		b.partial = false
-		return
 	}
-	b.push(line)
-}
-
-func (b *LineBuffer) appendPartial(p []byte) {
-	if b.count > 0 && b.partial {
-		last := (b.head + b.count - 1) % b.Max
-		b.lines[last] = append(b.lines[last], p...)
-		return
-	}
-	b.push(p)
-	b.partial = true
 }
 
 func (b *LineBuffer) push(line []byte) {
@@ -291,6 +349,14 @@ func (b *LineBuffer) push(line []byte) {
 		b.head = (b.head + 1) % b.Max
 	}
 	b.total++
+}
+
+// Version returns a counter that changes whenever data is appended; callers
+// use it to skip re-rendering unchanged output.
+func (b *LineBuffer) Version() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.version
 }
 
 // Total returns the number of lines ever written, including dropped ones.

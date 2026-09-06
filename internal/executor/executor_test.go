@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
 	"testing"
 	"time"
@@ -11,7 +12,8 @@ import (
 	"github.com/hsuanchenlin/control-center/internal/command"
 )
 
-// TestHelperProcess runs as a child: modes echo, err, sleep, big, badutf8.
+// TestHelperProcess runs as a child: modes echo, err, sleep, deaf, big,
+// badutf8.
 func TestHelperProcess(t *testing.T) {
 	if os.Getenv("GO_WANT_HELPER") != "1" {
 		return
@@ -31,7 +33,14 @@ func TestHelperProcess(t *testing.T) {
 		fmt.Println("to stdout")
 		os.Exit(3)
 	case "sleep":
-		select {} // killed by interrupt/cancel in the parent
+		// A real timer keeps the child alive until the parent's
+		// interrupt/cancel arrives; select{} would trip the deadlock
+		// detector and exit on its own.
+		time.Sleep(30 * time.Second)
+	case "deaf":
+		// Ignores SIGINT, so only the kill after WaitDelay ends it.
+		signal.Notify(make(chan os.Signal, 1), os.Interrupt)
+		time.Sleep(30 * time.Second)
 	case "big":
 		for i := 0; i < 20000; i++ {
 			fmt.Printf("line %d\n", i)
@@ -113,6 +122,64 @@ func TestRunCaptureCancellation(t *testing.T) {
 	_ = res // exit status after SIGINT is platform-specific; promptness is the contract
 }
 
+// stepClock advances by a fixed step on every reading, so elapsed time is
+// deterministic.
+type stepClock struct {
+	step  time.Duration
+	calls int
+}
+
+func (c *stepClock) Now() time.Time {
+	c.calls++
+	return time.Unix(0, 0).Add(time.Duration(c.calls) * c.step)
+}
+
+func TestRunCaptureUsesInjectedClock(t *testing.T) {
+	r := helperRunner(t)
+	r.Clock = &stepClock{step: 500 * time.Millisecond}
+	res := r.RunCapture(context.Background(), helperSpec("echo", "hi"), &strings.Builder{}, &strings.Builder{})
+	if res.Err != nil {
+		t.Fatalf("res = %+v", res)
+	}
+	if res.Elapsed != 500*time.Millisecond {
+		t.Fatalf("elapsed = %v, want the injected clock's step", res.Elapsed)
+	}
+}
+
+func TestRunCaptureCancellationReportsInterrupted(t *testing.T) {
+	r := helperRunner(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		cancel()
+	}()
+	res := r.RunCapture(ctx, helperSpec("sleep"), &strings.Builder{}, &strings.Builder{})
+	if res.Err != nil {
+		t.Fatalf("cancellation surfaced as a failure: %v", res.Err)
+	}
+	if !res.Interrupted {
+		t.Fatalf("cancelled run not reported as interrupted: %+v", res)
+	}
+}
+
+func TestRunCaptureKillsChildThatIgnoresInterrupt(t *testing.T) {
+	r := helperRunner(t)
+	r.KillDelay = 200 * time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		cancel()
+	}()
+	start := time.Now()
+	res := r.RunCapture(ctx, helperSpec("deaf"), &strings.Builder{}, &strings.Builder{})
+	if time.Since(start) > 5*time.Second {
+		t.Fatal("wait blocked on a child that ignores SIGINT: no kill escalation")
+	}
+	if !res.Interrupted {
+		t.Fatalf("res = %+v", res)
+	}
+}
+
 type fakeTerminal struct {
 	calls []string
 }
@@ -175,6 +242,15 @@ func TestRunPassthroughRequiresTerminal(t *testing.T) {
 	}
 }
 
+func TestRunPassthroughRequiresTerminalBoundary(t *testing.T) {
+	r := helperRunner(t)
+	r.StdinIsTerminal = func() bool { return true }
+	res := r.RunPassthrough(context.Background(), helperSpec("echo"), nil)
+	if res.Err == nil || !strings.Contains(res.Err.Error(), "terminal boundary") {
+		t.Fatalf("err = %v", res.Err)
+	}
+}
+
 func TestLineBufferBounds(t *testing.T) {
 	b := NewLineBuffer(100)
 	for i := 0; i < 500; i++ {
@@ -197,6 +273,44 @@ func TestLineBufferPartialLines(t *testing.T) {
 	lines := b.Lines()
 	if len(lines) != 2 || lines[0] != "hello" || lines[1] != "world" {
 		t.Fatalf("lines = %v", lines)
+	}
+}
+
+func TestLineBufferCapsNewlineFreeOutput(t *testing.T) {
+	b := NewLineBuffer(4)
+	chunk := make([]byte, 32<<10)
+	for i := range chunk {
+		chunk[i] = 'x'
+	}
+	// 8 MB with no newline at all.
+	for i := 0; i < 256; i++ {
+		b.Write(chunk)
+	}
+	retained := 0
+	for _, l := range b.Lines() {
+		if len(l) > maxLineBytes {
+			t.Fatalf("line of %d bytes exceeds the %d-byte cap", len(l), maxLineBytes)
+		}
+		retained += len(l)
+	}
+	if retained > 4*maxLineBytes {
+		t.Fatalf("retained %d bytes, want at most %d", retained, 4*maxLineBytes)
+	}
+	if b.Dropped() == 0 {
+		t.Fatal("over-long output was not split into droppable lines")
+	}
+}
+
+func TestLineBufferVersionChangesWithinOneLine(t *testing.T) {
+	b := NewLineBuffer(10)
+	b.Write([]byte("progress 10%"))
+	v := b.Version()
+	b.Write([]byte("\rprogress 20%"))
+	if b.Version() == v {
+		t.Fatal("version did not change for output appended to the current line")
+	}
+	if b.Total() != 1 {
+		t.Fatalf("partial-line writes should not add lines: total = %d", b.Total())
 	}
 }
 

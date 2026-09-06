@@ -124,13 +124,15 @@ Single-letter shortcuts never fire while a text field is focused.
 - The confirmation screen shows a shell-escaped rendering of the command;
   that string is display-only and is what `e` copies.
 - **capture** mode (default) streams stdout/stderr into a scrollable
-  viewport bounded to the last 5,000 lines, shows exit status and elapsed
-  time, sanitizes invalid UTF-8, and survives empty output, nonzero exits,
-  and missing executables.
+  viewport bounded to the last 5,000 lines of at most 64 KB each (so
+  newline-free output such as a progress bar stays bounded too), shows exit
+  status and elapsed time, sanitizes invalid UTF-8, and survives empty
+  output, nonzero exits, and missing executables.
 - **passthrough** mode suspends the TUI and hands the terminal directly to
   the child, restoring the terminal afterwards even on error or interrupt.
-- Ctrl-C while a child runs interrupts the child first; a second Ctrl-C
-  exits control-center.
+- Ctrl-C while a child runs interrupts the child first (SIGINT, escalating
+  to a kill if the child ignores it); the run is then reported as
+  interrupted. A second Ctrl-C exits control-center.
 - control-center makes no network connections of its own. Whatever a
   launched child does (e.g. a tool's own update check) is that tool's
   behavior. No telemetry, no background server, nothing persisted.
