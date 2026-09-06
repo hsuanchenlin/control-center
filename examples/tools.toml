@@ -12,9 +12,9 @@
 #                          and exactly one of: flag = "--flag"  or  positional = <index>
 
 # ---------------------------------------------------------------------------
-# EchoForge — media pipeline CLI.
+# EchoForge - media pipeline CLI.
 # Destructive or state-changing actions (update install, settings changes)
-# say so in their descriptions; EchoForge's own confirmations still apply —
+# say so in their descriptions; EchoForge's own confirmations still apply -
 # control-center never bypasses them.
 # ---------------------------------------------------------------------------
 [[tool]]
@@ -94,11 +94,11 @@ args = ["update", "--check"]   # ADAPT: confirm subcommand syntax
 
 [[tool.action]]
 name = "update-install"
-description = "Install EchoForge updates — state-changing; EchoForge prompts for its own confirmation"
+description = "Install EchoForge updates - state-changing; EchoForge prompts for its own confirmation"
 args = ["update", "--install"] # ADAPT: confirm subcommand syntax
 
 # ---------------------------------------------------------------------------
-# market-monitor — representative market/report choices.
+# market-monitor - representative market/report choices.
 # ADAPT: verify markets/reports against `market-monitor --help`.
 # ---------------------------------------------------------------------------
 [[tool]]
@@ -144,7 +144,7 @@ required = true
 positional = 0
 
 # ---------------------------------------------------------------------------
-# sports-scores-cli — representative sport/date choices.
+# sports-scores-cli - representative sport/date choices.
 # ADAPT: verify sports and date flag against `sports-scores-cli --help`.
 # ---------------------------------------------------------------------------
 [[tool]]

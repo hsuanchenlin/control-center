@@ -6,7 +6,7 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 
 ## control-center
 
-Go TUI launcher for curated CLI tools (Bubble Tea / huh / Lip Gloss). Product spec, schema reference, and keybindings live in `README.md`; the annotated manifest is `examples/tools.toml` — keep both in sync with code changes.
+Go TUI launcher for curated CLI tools (Bubble Tea / huh / Lip Gloss). Product spec, schema reference, and keybindings live in `README.md`; the annotated manifest is `examples/tools.toml` - keep both in sync with code changes.
 
 - Build/test: `go build ./...`, `go test ./...` (hermetic: no network, no real child tools; executor tests use the `TestHelperProcess` re-exec pattern), `go vet ./...`, `gofmt -l .`.
 - Module boundaries: `internal/config` (TOML schema + validation, framework-free), `internal/registry`, `internal/command` (argv assembly; `Display` string is presentation-only, never executed), `internal/form` (huh mapping), `internal/executor` (injected process/clipboard/clock/terminal), `internal/tui` (Bubble Tea state machine). Keep charmbracelet types out of `config`/`registry`/`command`.

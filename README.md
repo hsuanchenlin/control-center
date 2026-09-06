@@ -87,8 +87,9 @@ Rules enforced by `validate`:
 - `toggle` params are flag-only and are emitted only when true.
 - `select` params need at least one choice; defaults must be among them.
 - `number` defaults must be numeric and within `min`/`max`.
-- Unknown fields and unknown type/output values are rejected with the
-  tool/action/param named in the error.
+- Unknown fields are rejected with their TOML key path. Unknown type/output
+  values and other validation errors identify the affected tool, action, or
+  parameter.
 
 ### Parameter types
 
@@ -100,7 +101,7 @@ Rules enforced by `validate`:
 | `number` | text input   | Numeric parsing with optional `min`/`max`.                   |
 | `path`   | text input   | Leading `~` expands to your home dir; no shell globbing; `must_exist` is checked only when declared. |
 
-There is deliberately **no secret parameter type** — do not put tokens or
+There is deliberately **no secret parameter type** - do not put tokens or
 passwords in the manifest; they are not persisted anywhere by
 control-center, and manifests are plain text.
 
@@ -152,15 +153,16 @@ Single-letter shortcuts never fire while a text field is focused.
 
 ## Troubleshooting
 
-- **"executable … not found in PATH"** — install the tool, or fix the
+- **"executable … not found in PATH"** - install the tool, or fix the
   `executable` field. `control-center validate` cannot check this; the
   error appears on the output screen when you run the action.
-- **Malformed TOML / validation errors** — run `control-center validate`;
-  errors name the tool, action, and parameter at fault.
-- **Terminal looks broken after a passthrough command** — control-center
+- **Malformed TOML / validation errors** - run `control-center validate`;
+  decode errors identify the source or TOML key path, while validation errors
+  identify the tool, action, and parameter at fault.
+- **Terminal looks broken after a passthrough command** - control-center
   always restores the terminal after passthrough children; if a child
   crashed hard, run `reset` or `stty sane`, then report a bug.
-- **A tool needs interactive stdin** — set `output = "passthrough"` on that
+- **A tool needs interactive stdin** - set `output = "passthrough"` on that
   tool so the child inherits the terminal.
 
 ## Development
