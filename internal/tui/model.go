@@ -43,7 +43,6 @@ type (
 	outputTickMsg time.Time
 	childDoneMsg  executor.Result
 	copiedMsg     struct{ err error }
-	runFailedMsg  struct{ err error }
 )
 
 // Model is the root Bubble Tea model.
@@ -64,7 +63,7 @@ type Model struct {
 
 	// form / confirm
 	form      *form.Form
-	preserved form.Values
+	preserved map[string]form.Values // per tool/action, survives back navigation and reselect
 	action    config.Action
 	spec      command.Spec
 	notice    string // transient status line (e.g. copy result)
@@ -87,10 +86,11 @@ func New(deps Deps) Model {
 	ti.Focus()
 
 	m := Model{
-		deps:    deps,
-		screen:  screenPalette,
-		filter:  ti,
-		matches: deps.Registry.Tools(),
+		deps:      deps,
+		screen:    screenPalette,
+		filter:    ti,
+		matches:   deps.Registry.Tools(),
+		preserved: map[string]form.Values{},
 	}
 	return m
 }
@@ -149,13 +149,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case runFailedMsg:
-		res := executor.Result{Err: msg.err}
-		m.result = &res
-		m.running = false
-		m.notice = ""
-		m.refreshViewport()
-		return m, nil
 	}
 
 	switch m.screen {
@@ -174,6 +167,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) updatePalette(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// The filter always has focus on this screen, so every printable rune
+	// (including q) is literal input; no single-letter shortcut may fire
+	// here. Ctrl-C remains the global exit.
 	key, ok := msg.(tea.KeyMsg)
 	if ok {
 		switch msg := key; {
@@ -182,7 +178,6 @@ func (m Model) updatePalette(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.tool = m.matches[m.palCursor]
-			m.preserved = nil
 			return m.enterTool()
 		case isUp(msg):
 			if m.palCursor > 0 {
@@ -200,9 +195,6 @@ func (m Model) updatePalette(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.applyFilter()
 			}
 			return m, nil
-		case msg.Type == tea.KeyRunes && string(msg.Runes) == "q" && m.filter.Value() == "":
-			m.quitting = true
-			return m, tea.Quit
 		}
 	}
 	var cmd tea.Cmd
@@ -216,6 +208,12 @@ func (m *Model) applyFilter() {
 	if m.palCursor >= len(m.matches) {
 		m.palCursor = max(0, len(m.matches)-1)
 	}
+}
+
+// formKey identifies a tool/action pair so preserved form values never leak
+// between actions that happen to share param keys.
+func (m Model) formKey() string {
+	return m.tool.ID + "/" + m.action.Name
 }
 
 // enterTool moves from the palette into the action picker, or straight into
@@ -261,7 +259,7 @@ func (m Model) enterForm() (tea.Model, tea.Cmd) {
 		// Nothing to edit: go straight to confirmation.
 		return m.enterConfirm(form.Values{})
 	}
-	m.form = form.New(m.action, m.preserved)
+	m.form = form.New(m.action, m.preserved[m.formKey()])
 	if m.width > 0 {
 		m.form.Model.WithWidth(m.width).WithHeight(max(1, m.height-2))
 	}
@@ -272,7 +270,7 @@ func (m Model) enterForm() (tea.Model, tea.Cmd) {
 func (m Model) updateForm(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if key, ok := msg.(tea.KeyMsg); ok && key.Type == tea.KeyEsc {
 		// Esc backs out of the form without losing edits.
-		m.preserved = m.form.Snapshot()
+		m.preserved[m.formKey()] = m.form.Snapshot()
 		if len(m.tool.Actions) == 1 {
 			m.screen = screenPalette
 		} else {
@@ -292,10 +290,10 @@ func (m Model) updateForm(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.notice = err.Error()
 			return m, nil
 		}
-		m.preserved = vals
+		m.preserved[m.formKey()] = vals
 		return m.enterConfirm(vals)
 	case huh.StateAborted:
-		m.preserved = m.form.Snapshot()
+		m.preserved[m.formKey()] = m.form.Snapshot()
 		if len(m.tool.Actions) == 1 {
 			m.screen = screenPalette
 		} else {
@@ -382,12 +380,10 @@ func (m Model) startRun() (tea.Model, tea.Cmd) {
 		runner := m.deps.Runner
 		term := m.deps.Terminal
 		spec := m.spec
+		// Errors, interruption, and restore failures all travel in the
+		// Result so nothing (including RestoreErr) is dropped.
 		return m, func() tea.Msg {
-			res := runner.RunPassthrough(ctx, spec, term)
-			if res.Err != nil {
-				return runFailedMsg{err: res.Err}
-			}
-			return childDoneMsg(res)
+			return childDoneMsg(runner.RunPassthrough(ctx, spec, term))
 		}
 	}
 
@@ -395,11 +391,7 @@ func (m Model) startRun() (tea.Model, tea.Cmd) {
 	spec := m.spec
 	buf := m.buffer
 	runCmd := func() tea.Msg {
-		res := runner.RunCapture(ctx, spec, buf, buf)
-		if res.Err != nil {
-			return runFailedMsg{err: res.Err}
-		}
-		return childDoneMsg(res)
+		return childDoneMsg(runner.RunCapture(ctx, spec, buf, buf))
 	}
 	return m, tea.Batch(runCmd, tickCmd())
 }

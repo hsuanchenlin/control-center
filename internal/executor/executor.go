@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/atotto/clipboard"
@@ -28,6 +29,11 @@ type Result struct {
 	// Err is non-nil only when the process could not be started or waited on;
 	// nonzero exits are reported via ExitCode, not Err.
 	Err error
+	// RestoreErr is non-nil when the terminal could not be restored after a
+	// passthrough run. It is reported independently of Err and ExitCode so a
+	// failed restore is never silently discarded, including when the child
+	// also failed.
+	RestoreErr error
 }
 
 // Clock supplies the current time.
@@ -87,6 +93,12 @@ type Runner struct {
 	// inject fakes here. It receives the resolved path and argv and returns
 	// a wait function yielding the exit code.
 	StartProcess func(ctx context.Context, path string, args []string, stdout, stderr io.Writer) (wait func() (int, error), err error)
+	// StartPassthrough, when set, replaces the real exec for passthrough
+	// mode; tests inject fakes here so hermetic tests never spawn real
+	// tools. It receives the resolved path, argv, and terminal streams and
+	// returns a wait function yielding the exit code. Cancellation of ctx
+	// must interrupt the child the same way the real implementation does.
+	StartPassthrough func(ctx context.Context, path string, args []string, stdin io.Reader, stdout, stderr io.Writer) (wait func() (int, error), err error)
 }
 
 // NewRunner returns a Runner wired to the real OS.
@@ -126,8 +138,8 @@ func (r *Runner) Resolve(executable string) (string, error) {
 // RunCapture starts the child, streaming stdout and stderr into the provided
 // writers as data arrives, and blocks until it exits or ctx is cancelled.
 // Cancellation interrupts the child (SIGINT via Cancel) and kills it once
-// KillDelay passes; the result is then reported as Interrupted, not as a
-// failure to start.
+// KillDelay passes; the run is then reported as Interrupted, never as a
+// success or a start failure, even when the child handles SIGINT and exits 0.
 func (r *Runner) RunCapture(ctx context.Context, spec command.Spec, stdout, stderr io.Writer) Result {
 	start := r.now()
 	path, err := r.Resolve(spec.Executable)
@@ -136,41 +148,59 @@ func (r *Runner) RunCapture(ctx context.Context, spec command.Spec, stdout, stde
 	}
 
 	var wait func() (int, error)
+	var interrupted *atomic.Bool
 	if r.StartProcess != nil {
 		wait, err = r.StartProcess(ctx, path, spec.Args, stdout, stderr)
 	} else {
-		wait, err = r.startReal(ctx, path, spec.Args, stdout, stderr)
+		wait, interrupted, err = r.startReal(ctx, path, spec.Args, nil, stdout, stderr)
 	}
 	if err != nil {
 		return Result{Err: fmt.Errorf("start %q: %w", spec.Executable, err)}
 	}
 	code, werr := wait()
 	res := Result{ExitCode: code, Elapsed: r.now().Sub(start)}
-	if werr != nil || code != 0 {
-		switch {
-		case ctx.Err() != nil:
-			res.Interrupted = true
-		case werr != nil && code == 0:
-			res.Err = werr
-		}
+	switch {
+	case wasInterrupted(ctx, interrupted):
+		// An explicit interrupt is never a success, regardless of exit code.
+		res.Interrupted = true
+	case werr != nil && code == 0:
+		res.Err = werr
 	}
 	return res
 }
 
-func (r *Runner) startReal(ctx context.Context, path string, args []string, stdout, stderr io.Writer) (func() (int, error), error) {
+// wasInterrupted reports whether the run ended due to cancellation. The
+// Cancel-closure flag is authoritative for real processes (os/exec invokes
+// Cancel only when ctx is cancelled while the child is still running); for
+// injected fakes, which have no Cancel closure, a post-wait context check is
+// the documented approximation.
+func wasInterrupted(ctx context.Context, flag *atomic.Bool) bool {
+	if flag != nil {
+		return flag.Load()
+	}
+	return ctx.Err() != nil
+}
+
+// startReal starts a real child process. The returned flag reports whether
+// the Cancel closure fired, i.e. the child was interrupted by cancellation;
+// stdin may be nil for capture mode.
+func (r *Runner) startReal(ctx context.Context, path string, args []string, stdin io.Reader, stdout, stderr io.Writer) (func() (int, error), *atomic.Bool, error) {
+	interrupted := &atomic.Bool{}
 	cmd := exec.CommandContext(ctx, path, args...)
 	// Interrupt first on cancellation; exec kills only after Cancel returns.
 	cmd.Cancel = func() error {
+		interrupted.Store(true)
 		if cmd.Process == nil {
 			return nil
 		}
 		return cmd.Process.Signal(os.Interrupt)
 	}
 	cmd.WaitDelay = r.killDelay()
+	cmd.Stdin = stdin
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	if err := cmd.Start(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	return func() (int, error) {
 		err := cmd.Wait()
@@ -187,12 +217,13 @@ func (r *Runner) startReal(ctx context.Context, path string, args []string, stdo
 			return cmd.ProcessState.ExitCode(), nil
 		}
 		return 0, err
-	}, nil
+	}, interrupted, nil
 }
 
 // RunPassthrough hands the terminal directly to the child: the terminal is
 // released, the child runs with the real stdin/stdout/stderr, and the
-// terminal is always restored afterwards, even on error.
+// terminal is always restored afterwards. Restoration errors are reported in
+// Result.RestoreErr, never discarded, including when the child also fails.
 func (r *Runner) RunPassthrough(ctx context.Context, spec command.Spec, term Terminal) Result {
 	if term == nil {
 		return Result{Err: errors.New("passthrough requires a terminal boundary; this tool cannot run without one")}
@@ -212,11 +243,6 @@ func (r *Runner) RunPassthrough(ctx context.Context, spec command.Spec, term Ter
 	if err := term.Release(); err != nil {
 		return Result{Err: fmt.Errorf("release terminal: %w", err)}
 	}
-	restore := func() {
-		// Restoration failure is reported in the result when nothing else
-		// went wrong; the TUI also re-inits on resume.
-		_ = term.Restore()
-	}
 
 	stdin := r.Stdin
 	if stdin == nil {
@@ -231,34 +257,37 @@ func (r *Runner) RunPassthrough(ctx context.Context, spec command.Spec, term Ter
 		stderr = os.Stderr
 	}
 
-	cmd := exec.CommandContext(ctx, path, spec.Args...)
-	cmd.Cancel = func() error {
-		if cmd.Process == nil {
-			return nil
-		}
-		return cmd.Process.Signal(os.Interrupt)
+	var wait func() (int, error)
+	var interrupted *atomic.Bool
+	if r.StartPassthrough != nil {
+		wait, err = r.StartPassthrough(ctx, path, spec.Args, stdin, stdout, stderr)
+	} else {
+		wait, interrupted, err = r.startReal(ctx, path, spec.Args, stdin, stdout, stderr)
 	}
-	cmd.WaitDelay = r.killDelay()
-	cmd.Stdin = stdin
-	cmd.Stdout = stdout
-	cmd.Stderr = stderr
-	runErr := cmd.Run()
-	restore()
-	res := Result{Elapsed: r.now().Sub(start)}
-	if runErr != nil {
-		var exitErr *exec.ExitError
-		switch {
-		case errors.As(runErr, &exitErr):
-			res.ExitCode = exitErr.ExitCode()
-		case ctx.Err() == nil:
-			res.Err = fmt.Errorf("run %q: %w", spec.Executable, runErr)
-			return res
-		}
-		if ctx.Err() != nil {
-			res.Interrupted = true
-		}
+	if err != nil {
+		res := Result{Err: fmt.Errorf("start %q: %w", spec.Executable, err), Elapsed: r.now().Sub(start)}
+		res.RestoreErr = restoreError(term.Restore())
+		return res
+	}
+	code, werr := wait()
+	restoreErr := restoreError(term.Restore())
+	res := Result{ExitCode: code, Elapsed: r.now().Sub(start), RestoreErr: restoreErr}
+	switch {
+	case wasInterrupted(ctx, interrupted):
+		res.Interrupted = true
+	case werr != nil:
+		res.Err = fmt.Errorf("run %q: %w", spec.Executable, werr)
 	}
 	return res
+}
+
+// restoreError wraps a terminal restoration failure for reporting; nil in,
+// nil out.
+func restoreError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("restore terminal: %w", err)
 }
 
 // maxLineBytes caps a single retained line, so newline-free output (progress

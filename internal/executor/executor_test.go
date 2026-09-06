@@ -2,7 +2,9 @@ package executor
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"strings"
@@ -41,6 +43,12 @@ func TestHelperProcess(t *testing.T) {
 		// Ignores SIGINT, so only the kill after WaitDelay ends it.
 		signal.Notify(make(chan os.Signal, 1), os.Interrupt)
 		time.Sleep(30 * time.Second)
+	case "catchint":
+		// Traps SIGINT and exits successfully, simulating a graceful child.
+		sig := make(chan os.Signal, 1)
+		signal.Notify(sig, os.Interrupt)
+		<-sig
+		fmt.Println("caught interrupt")
 	case "big":
 		for i := 0; i < 20000; i++ {
 			fmt.Printf("line %d\n", i)
@@ -181,7 +189,8 @@ func TestRunCaptureKillsChildThatIgnoresInterrupt(t *testing.T) {
 }
 
 type fakeTerminal struct {
-	calls []string
+	calls      []string
+	restoreErr error
 }
 
 func (f *fakeTerminal) Release() error {
@@ -190,7 +199,7 @@ func (f *fakeTerminal) Release() error {
 }
 func (f *fakeTerminal) Restore() error {
 	f.calls = append(f.calls, "restore")
-	return nil
+	return f.restoreErr
 }
 
 func TestRunPassthroughRestoresTerminal(t *testing.T) {
@@ -343,4 +352,119 @@ func TestLineBufferConcurrentUse(t *testing.T) {
 func TestSystemClipboardImplementsBoundary(t *testing.T) {
 	var _ Clipboard = SystemClipboard{}
 	var _ Clock = SystemClock{}
+}
+
+// TestInterruptExitZeroStillInterrupted pins that an explicit interrupt is
+// reported as Interrupted even when the child traps SIGINT and exits 0.
+func TestInterruptExitZeroStillInterrupted(t *testing.T) {
+	r := helperRunner(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		cancel()
+	}()
+	res := r.RunCapture(ctx, helperSpec("catchint"), &strings.Builder{}, &strings.Builder{})
+	if !res.Interrupted {
+		t.Fatalf("graceful interrupt not classified: %+v", res)
+	}
+	if res.Err != nil {
+		t.Fatalf("interrupt must not surface as a start failure: %v", res.Err)
+	}
+}
+
+func TestInterruptExitZeroStillInterruptedPassthrough(t *testing.T) {
+	r := helperRunner(t)
+	r.StdinIsTerminal = func() bool { return true }
+	r.Stdin = strings.NewReader("")
+	r.Stdout = &strings.Builder{}
+	r.Stderr = &strings.Builder{}
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		cancel()
+	}()
+	res := r.RunPassthrough(ctx, helperSpec("catchint"), &fakeTerminal{})
+	if !res.Interrupted {
+		t.Fatalf("graceful passthrough interrupt not classified: %+v", res)
+	}
+}
+
+// TestRestoreErrorReported pins that terminal restoration failures are
+// surfaced whether or not the child succeeded.
+func TestRestoreErrorReported(t *testing.T) {
+	newRunner := func(t *testing.T) *Runner {
+		r := helperRunner(t)
+		r.StdinIsTerminal = func() bool { return true }
+		r.Stdin = strings.NewReader("")
+		r.Stdout = &strings.Builder{}
+		r.Stderr = &strings.Builder{}
+		return r
+	}
+
+	// Child succeeds, restore fails.
+	term := &fakeTerminal{restoreErr: errors.New("restore blew up")}
+	res := newRunner(t).RunPassthrough(context.Background(), helperSpec("echo", "hi"), term)
+	if res.RestoreErr == nil || !strings.Contains(res.RestoreErr.Error(), "restore blew up") {
+		t.Fatalf("restore error dropped on success: %+v", res)
+	}
+	if res.Err != nil {
+		t.Fatalf("restore error must not masquerade as start failure: %v", res.Err)
+	}
+
+	// Child fails AND restore fails: both must be visible.
+	term = &fakeTerminal{restoreErr: errors.New("restore blew up")}
+	res = newRunner(t).RunPassthrough(context.Background(), helperSpec("err"), term)
+	if res.ExitCode != 3 {
+		t.Fatalf("child exit lost: %+v", res)
+	}
+	if res.RestoreErr == nil {
+		t.Fatalf("restore error dropped alongside child failure: %+v", res)
+	}
+}
+
+// TestPassthroughUsesInjectedBoundary pins that passthrough launches go
+// through the injected process boundary, so hermetic tests never exec.
+func TestPassthroughUsesInjectedBoundary(t *testing.T) {
+	r := helperRunner(t)
+	r.StdinIsTerminal = func() bool { return true }
+	spawned := false
+	r.StartPassthrough = func(ctx context.Context, path string, args []string, stdin io.Reader, stdout, stderr io.Writer) (func() (int, error), error) {
+		spawned = true
+		if !strings.HasSuffix(args[len(args)-1], "fake-mode") {
+			t.Errorf("argv not passed through: %v", args)
+		}
+		return func() (int, error) { return 7, nil }, nil
+	}
+	term := &fakeTerminal{}
+	res := r.RunPassthrough(context.Background(), helperSpec("fake-mode"), term)
+	if !spawned {
+		t.Fatal("injected boundary not used")
+	}
+	if res.ExitCode != 7 || res.Err != nil {
+		t.Fatalf("res = %+v", res)
+	}
+	if len(term.calls) != 2 || term.calls[0] != "release" || term.calls[1] != "restore" {
+		t.Fatalf("terminal calls = %v", term.calls)
+	}
+}
+
+// TestInjectedCaptureInterruptApproximation documents the ctx-based
+// interrupt classification for the injected capture path.
+func TestInjectedCaptureInterruptApproximation(t *testing.T) {
+	r := helperRunner(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	r.StartProcess = func(ctx context.Context, path string, args []string, stdout, stderr io.Writer) (func() (int, error), error) {
+		return func() (int, error) {
+			<-ctx.Done() // simulate a graceful child exiting 0 on interrupt
+			return 0, nil
+		}, nil
+	}
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		cancel()
+	}()
+	res := r.RunCapture(ctx, helperSpec("echo"), &strings.Builder{}, &strings.Builder{})
+	if !res.Interrupted {
+		t.Fatalf("injected graceful interrupt not classified: %+v", res)
+	}
 }

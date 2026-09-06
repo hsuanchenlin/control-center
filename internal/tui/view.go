@@ -54,7 +54,7 @@ func (m Model) viewPalette() string {
 			b.WriteString(cursor + line + "\n")
 		}
 	}
-	b.WriteString("\n" + dimStyle.Render("↑/↓ or Ctrl-P/Ctrl-N move · Enter select · Esc clear filter · q quit · Ctrl-C exit"))
+	b.WriteString("\n" + dimStyle.Render("↑/↓ or Ctrl-P/Ctrl-N move · Enter select · Esc clear filter · Ctrl-C exit"))
 	return b.String()
 }
 
@@ -115,7 +115,11 @@ func (m Model) viewOutput() string {
 	case m.result != nil:
 		header += okStyle.Render(fmt.Sprintf("- done in %s", m.result.Elapsed.Round(1e6)))
 	}
-	b.WriteString(header + "\n\n")
+	b.WriteString(header + "\n")
+	if m.result != nil && m.result.RestoreErr != nil {
+		b.WriteString(errStyle.Render("terminal restore failed: "+m.result.RestoreErr.Error()) + "\n")
+	}
+	b.WriteString("\n")
 	b.WriteString(m.viewport.View())
 	if m.notice != "" {
 		b.WriteString("\n" + dimStyle.Render(m.notice))

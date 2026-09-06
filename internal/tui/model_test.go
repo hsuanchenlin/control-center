@@ -39,6 +39,18 @@ name = "bare"
 description = "no params"
 args = ["bare"]
 
+[[tool.action]]
+name = "goto"
+description = "shares the dest key with go"
+args = ["goto"]
+
+[[tool.action.param]]
+key = "dest"
+label = "Destination"
+type = "text"
+required = true
+flag = "--dest"
+
 [[tool]]
 id = "solo"
 name = "Solo Tool"
@@ -142,32 +154,37 @@ func TestPaletteFilterNarrows(t *testing.T) {
 	}
 }
 
-func TestPaletteQQuitsOnlyWhenFilterEmpty(t *testing.T) {
+func TestPaletteQIsLiteralInput(t *testing.T) {
+	// The palette filter always has focus, so q must never quit: every
+	// printable rune is literal input (firstmate decision on
+	// palette-q-steals-input).
 	m, _ := newTestModel(t)
-	// Typing 'q' into a nonempty filter must not quit.
-	tm, _ := m.Update(runes("a"))
-	m = asModel(t, tm)
-	tm, cmd := m.Update(runes("q"))
+	tm, _ := m.Update(runes("q"))
 	m = asModel(t, tm)
 	if m.quitting {
-		t.Fatal("q stolen from filter: app quit")
+		t.Fatal("q quit the app from an empty filter")
 	}
-	if m.filter.Value() != "aq" {
+	if m.filter.Value() != "q" {
 		t.Fatalf("q not typed into filter: %q", m.filter.Value())
 	}
-	// With an empty filter, q quits.
+	tm, _ = m.Update(runes("a"))
+	m = asModel(t, tm)
+	if m.filter.Value() != "qa" {
+		t.Fatalf("filter = %q", m.filter.Value())
+	}
+	// Esc clears the filter instead of quitting.
 	tm, _ = m.Update(key(tea.KeyEsc))
 	m = asModel(t, tm)
-	if m.filter.Value() != "" {
-		t.Fatalf("esc did not clear filter: %q", m.filter.Value())
+	if m.filter.Value() != "" || m.quitting {
+		t.Fatalf("esc: filter=%q quitting=%v", m.filter.Value(), m.quitting)
 	}
-	tm, cmd = m.Update(runes("q"))
+	// Ctrl-C remains the global exit.
+	tm, cmd := m.Update(key(tea.KeyCtrlC))
 	m = asModel(t, tm)
 	if !m.quitting || cmd == nil {
-		t.Fatal("q did not quit from empty-filter palette")
+		t.Fatal("ctrl+c did not quit the palette")
 	}
 }
-
 func TestPaletteCtrlPNNavigation(t *testing.T) {
 	m, _ := newTestModel(t)
 	tm, _ := m.Update(key(tea.KeyCtrlN))
@@ -250,7 +267,7 @@ func TestFormEscBackPreservesEdits(t *testing.T) {
 	if m.screen != screenAction {
 		t.Fatalf("esc did not return to action: %v", m.screen)
 	}
-	if m.preserved["dest"] != "x" {
+	if m.preserved["multi/go"]["dest"] != "x" {
 		t.Fatalf("edits lost: %v", m.preserved)
 	}
 	// Re-entering the form keeps the edit.
@@ -303,8 +320,8 @@ func TestConfirmEscReturnsToForm(t *testing.T) {
 	m = asModel(t, tm)
 	tm, _ = m.Update(key(tea.KeyEnter)) // form
 	m = asModel(t, tm)
-	m.preserved = form.Values{"n": "3"}
-	tm, _ = m.enterConfirm(m.preserved)
+	m.preserved["solo/run"] = form.Values{"n": "3"}
+	tm, _ = m.enterConfirm(m.preserved["solo/run"])
 	m = asModel(t, tm)
 	if m.screen != screenConfirm {
 		t.Fatalf("screen = %v", m.screen)
@@ -399,15 +416,28 @@ func TestWindowResizeSafe(t *testing.T) {
 	_ = asModel(t, tm).View() // must not panic
 }
 
-func TestQuitFromPaletteViaQ(t *testing.T) {
+func TestFormValuesPreservedAcrossReselect(t *testing.T) {
+	// Single-action tool: edits survive Esc to the palette and reselecting
+	// the tool (firstmate decision on form-values-not-preserved-per-action).
 	m, _ := newTestModel(t)
-	tm, cmd := m.Update(runes("q"))
+	tm, _ := m.Update(runes("solo"))
 	m = asModel(t, tm)
-	if !m.quitting || cmd == nil {
-		t.Fatal("q did not quit")
+	tm, _ = m.Update(key(tea.KeyEnter)) // straight to form
+	m = asModel(t, tm)
+	tm, _ = m.Update(runes("7"))
+	m = asModel(t, tm)
+	tm, _ = m.Update(key(tea.KeyEsc)) // back to palette
+	m = asModel(t, tm)
+	if m.screen != screenPalette {
+		t.Fatalf("screen = %v", m.screen)
 	}
-	if m.View() != "" {
-		t.Fatal("quitting view should be empty")
+	if m.preserved["solo/run"]["n"] != "7" {
+		t.Fatalf("edits lost on esc: %v", m.preserved)
+	}
+	tm, _ = m.Update(key(tea.KeyEnter)) // reselect same tool
+	m = asModel(t, tm)
+	if m.screen != screenForm || m.form.Snapshot()["n"] != "7" {
+		t.Fatalf("form not rehydrated after reselect: %v", m.form.Snapshot())
 	}
 }
 
@@ -505,13 +535,55 @@ func TestPassthroughWithoutTerminalFailsInsteadOfPanicking(t *testing.T) {
 		t.Fatal("run produced no command")
 	}
 	msg := cmd()
-	failed, ok := msg.(runFailedMsg)
+	done, ok := msg.(childDoneMsg)
 	if !ok {
 		t.Fatalf("msg = %#v", msg)
 	}
-	tm, _ = m.Update(failed)
+	res := executor.Result(done)
+	if res.Err == nil {
+		t.Fatal("missing terminal boundary not reported")
+	}
+	tm, _ = m.Update(done)
 	m = asModel(t, tm)
 	if v := m.View(); !strings.Contains(v, "terminal boundary") {
 		t.Fatalf("view missing the wiring error:\n%s", v)
+	}
+}
+
+func TestFormValuesDoNotLeakBetweenActions(t *testing.T) {
+	// Actions sharing a param key must not inherit each other's edits.
+	m, _ := newTestModel(t)
+	tm, _ := m.Update(key(tea.KeyEnter)) // multi
+	m = asModel(t, tm)
+	tm, _ = m.Update(key(tea.KeyEnter)) // action "go"
+	m = asModel(t, tm)
+	tm, _ = m.Update(runes("x"))
+	m = asModel(t, tm)
+	tm, _ = m.Update(key(tea.KeyEsc)) // back to action picker
+	m = asModel(t, tm)
+	// Move to "goto" (index 2) and enter its form.
+	tm, _ = m.Update(key(tea.KeyCtrlN))
+	m = asModel(t, tm)
+	tm, _ = m.Update(key(tea.KeyCtrlN))
+	m = asModel(t, tm)
+	tm, _ = m.Update(key(tea.KeyEnter))
+	m = asModel(t, tm)
+	if m.action.Name != "goto" {
+		t.Fatalf("action = %q", m.action.Name)
+	}
+	if got := m.form.Snapshot()["dest"]; got != "" {
+		t.Fatalf("dest leaked across actions: %q", got)
+	}
+	// And the original action's value is still intact.
+	tm, _ = m.Update(key(tea.KeyEsc))
+	m = asModel(t, tm)
+	tm, _ = m.Update(key(tea.KeyCtrlP))
+	m = asModel(t, tm)
+	tm, _ = m.Update(key(tea.KeyCtrlP))
+	m = asModel(t, tm)
+	tm, _ = m.Update(key(tea.KeyEnter))
+	m = asModel(t, tm)
+	if m.action.Name != "go" || m.form.Snapshot()["dest"] != "x" {
+		t.Fatalf("go's edits lost: action=%q snapshot=%v", m.action.Name, m.form.Snapshot())
 	}
 }

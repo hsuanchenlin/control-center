@@ -109,7 +109,7 @@ control-center, and manifests are plain text.
 
 | Screen      | Keys                                                                 |
 |-------------|----------------------------------------------------------------------|
-| Palette     | Type to filter · ↑/↓ or Ctrl-P/Ctrl-N move · Enter select · Esc clear filter · `q` quit (only when the filter is empty, so it can't steal typing) · Ctrl-C exit |
+| Palette     | Type to filter · ↑/↓ or Ctrl-P/Ctrl-N move · Enter select · Esc clear filter · Ctrl-C exit. The filter always has focus, so every printable key (including `q`) is literal input. |
 | Action      | ↑/↓ or Ctrl-P/Ctrl-N move · Enter select · Esc back · Ctrl-C exit    |
 | Form        | Type to edit · Tab/Shift-Tab move fields · Enter submit · Esc back (edits preserved) · Ctrl-C exit |
 | Confirm     | Enter run · `e` copy the command to the clipboard without running · Esc back · Ctrl-C exit |
@@ -130,7 +130,9 @@ Single-letter shortcuts never fire while a text field is focused.
   status and elapsed time, sanitizes invalid UTF-8, and survives empty
   output, nonzero exits, and missing executables.
 - **passthrough** mode suspends the TUI and hands the terminal directly to
-  the child, restoring the terminal afterwards even on error or interrupt.
+  the child, restoring the terminal afterwards even on error or interrupt;
+  a failed restore is reported on the output screen, never silently
+  discarded.
 - Ctrl-C while a child runs interrupts the child first (SIGINT, escalating
   to a kill if the child ignores it); the run is then reported as
   interrupted. A second Ctrl-C exits control-center.
