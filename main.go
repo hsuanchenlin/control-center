@@ -17,7 +17,7 @@ import (
 // version is set at build time via -ldflags "-X main.version=...".
 var version = "dev"
 
-const usage = `control-center — a keyboard-first launcher for your curated CLI tools
+const usage = `control-center - a keyboard-first launcher for your curated CLI tools
 
 Usage:
   control-center [--config <path>]     launch the TUI

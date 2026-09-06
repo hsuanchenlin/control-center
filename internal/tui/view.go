@@ -39,17 +39,17 @@ func (m Model) View() string {
 
 func (m Model) viewPalette() string {
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("control-center") + dimStyle.Render(" — pick a tool") + "\n\n")
+	b.WriteString(titleStyle.Render("control-center") + dimStyle.Render(" - pick a tool") + "\n\n")
 	b.WriteString(m.filter.View() + "\n\n")
 	if len(m.matches) == 0 {
 		b.WriteString(dimStyle.Render("  no tools match") + "\n")
 	} else {
 		for i, t := range m.matches {
 			cursor := "  "
-			line := fmt.Sprintf("%s — %s", t.Name, t.Description)
+			line := fmt.Sprintf("%s - %s", t.Name, t.Description)
 			if i == m.palCursor {
 				cursor = cursorStyle.Render("› ")
-				line = cursorStyle.Render(t.Name) + dimStyle.Render(" — "+t.Description)
+				line = cursorStyle.Render(t.Name) + dimStyle.Render(" - "+t.Description)
 			}
 			b.WriteString(cursor + line + "\n")
 		}
@@ -60,13 +60,13 @@ func (m Model) viewPalette() string {
 
 func (m Model) viewAction() string {
 	var b strings.Builder
-	b.WriteString(titleStyle.Render(m.tool.Name) + dimStyle.Render(" — pick an action") + "\n\n")
+	b.WriteString(titleStyle.Render(m.tool.Name) + dimStyle.Render(" - pick an action") + "\n\n")
 	for i, a := range m.tool.Actions {
 		cursor := "  "
-		line := fmt.Sprintf("%s — %s", a.Name, a.Description)
+		line := fmt.Sprintf("%s - %s", a.Name, a.Description)
 		if i == m.actCursor {
 			cursor = cursorStyle.Render("› ")
-			line = cursorStyle.Render(a.Name) + dimStyle.Render(" — "+a.Description)
+			line = cursorStyle.Render(a.Name) + dimStyle.Render(" - "+a.Description)
 		}
 		b.WriteString(cursor + line + "\n")
 	}
@@ -87,7 +87,7 @@ func (m Model) viewForm() string {
 
 func (m Model) viewConfirm() string {
 	var b strings.Builder
-	b.WriteString(titleStyle.Render(m.tool.Name+" · "+m.action.Name) + dimStyle.Render(" — review command") + "\n\n")
+	b.WriteString(titleStyle.Render(m.tool.Name+" · "+m.action.Name) + dimStyle.Render(" - review command") + "\n\n")
 	b.WriteString(sectionStyle.Render("About to run:") + "\n\n")
 	b.WriteString("  " + cmdStyle.Render(m.spec.Display) + "\n")
 	if m.tool.Output == "passthrough" {
@@ -105,15 +105,15 @@ func (m Model) viewOutput() string {
 	header := titleStyle.Render(m.tool.Name+" · "+m.action.Name) + " "
 	switch {
 	case m.running:
-		header += dimStyle.Render("— running…")
+		header += dimStyle.Render("- running…")
 	case m.result != nil && m.result.Err != nil:
-		header += errStyle.Render("— failed: " + m.result.Err.Error())
+		header += errStyle.Render("- failed: " + m.result.Err.Error())
 	case m.result != nil && m.result.Interrupted:
-		header += errStyle.Render(fmt.Sprintf("— interrupted after %s", m.result.Elapsed.Round(1e6)))
+		header += errStyle.Render(fmt.Sprintf("- interrupted after %s", m.result.Elapsed.Round(1e6)))
 	case m.result != nil && m.result.ExitCode != 0:
-		header += errStyle.Render(fmt.Sprintf("— exit %d in %s", m.result.ExitCode, m.result.Elapsed.Round(1e6)))
+		header += errStyle.Render(fmt.Sprintf("- exit %d in %s", m.result.ExitCode, m.result.Elapsed.Round(1e6)))
 	case m.result != nil:
-		header += okStyle.Render(fmt.Sprintf("— done in %s", m.result.Elapsed.Round(1e6)))
+		header += okStyle.Render(fmt.Sprintf("- done in %s", m.result.Elapsed.Round(1e6)))
 	}
 	b.WriteString(header + "\n\n")
 	b.WriteString(m.viewport.View())
