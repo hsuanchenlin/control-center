@@ -140,6 +140,8 @@ func TestValidationErrors(t *testing.T) {
 		{"number bad default", manifestWithParam("key='p'\nlabel='P'\ntype='number'\nflag='--p'\ndefault='abc'"), "not numeric"},
 		{"number NaN default", manifestWithParam("key='p'\nlabel='P'\ntype='number'\nflag='--p'\ndefault='NaN'"), "not numeric"},
 		{"number infinite default", manifestWithParam("key='p'\nlabel='P'\ntype='number'\nflag='--p'\ndefault='+Inf'"), "not numeric"},
+		{"number NaN min", manifestWithParam("key='p'\nlabel='P'\ntype='number'\nflag='--p'\nmin=nan"), "min must be a finite number"},
+		{"number infinite max", manifestWithParam("key='p'\nlabel='P'\ntype='number'\nflag='--p'\nmax=+inf"), "max must be a finite number"},
 		{"number min>max", manifestWithParam("key='p'\nlabel='P'\ntype='number'\nflag='--p'\nmin=5\nmax=1"), "greater than max"},
 		{"number default below min", manifestWithParam("key='p'\nlabel='P'\ntype='number'\nflag='--p'\nmin=5\ndefault='2'"), "below min"},
 		{"text with choices", manifestWithParam("key='p'\nlabel='P'\ntype='text'\nflag='--p'\nchoices=['a']"), "only to select"},

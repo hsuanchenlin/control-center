@@ -300,6 +300,12 @@ func validateParams(where string, params []Param) error {
 			if len(p.Choices) > 0 {
 				return fmt.Errorf("%s: choices apply only to select params", pwhere)
 			}
+			if p.Min != nil && (math.IsNaN(*p.Min) || math.IsInf(*p.Min, 0)) {
+				return fmt.Errorf("%s: min must be a finite number", pwhere)
+			}
+			if p.Max != nil && (math.IsNaN(*p.Max) || math.IsInf(*p.Max, 0)) {
+				return fmt.Errorf("%s: max must be a finite number", pwhere)
+			}
 			if p.Min != nil && p.Max != nil && *p.Min > *p.Max {
 				return fmt.Errorf("%s: min (%v) is greater than max (%v)", pwhere, *p.Min, *p.Max)
 			}
