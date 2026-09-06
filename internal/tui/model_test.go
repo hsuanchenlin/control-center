@@ -267,7 +267,7 @@ func TestFormEscBackPreservesEdits(t *testing.T) {
 	if m.screen != screenAction {
 		t.Fatalf("esc did not return to action: %v", m.screen)
 	}
-	if m.preserved["multi/go"]["dest"] != "x" {
+	if m.preserved[formStateKey{toolID: "multi", actionName: "go"}]["dest"] != "x" {
 		t.Fatalf("edits lost: %v", m.preserved)
 	}
 	// Re-entering the form keeps the edit.
@@ -320,8 +320,9 @@ func TestConfirmEscReturnsToForm(t *testing.T) {
 	m = asModel(t, tm)
 	tm, _ = m.Update(key(tea.KeyEnter)) // form
 	m = asModel(t, tm)
-	m.preserved["solo/run"] = form.Values{"n": "3"}
-	tm, _ = m.enterConfirm(m.preserved["solo/run"])
+	key := formStateKey{toolID: "solo", actionName: "run"}
+	m.preserved[key] = form.Values{"n": "3"}
+	tm, _ = m.enterConfirm(m.preserved[key])
 	m = asModel(t, tm)
 	if m.screen != screenConfirm {
 		t.Fatalf("screen = %v", m.screen)
@@ -431,7 +432,7 @@ func TestFormValuesPreservedAcrossReselect(t *testing.T) {
 	if m.screen != screenPalette {
 		t.Fatalf("screen = %v", m.screen)
 	}
-	if m.preserved["solo/run"]["n"] != "7" {
+	if m.preserved[formStateKey{toolID: "solo", actionName: "run"}]["n"] != "7" {
 		t.Fatalf("edits lost on esc: %v", m.preserved)
 	}
 	tm, _ = m.Update(key(tea.KeyEnter)) // reselect same tool
@@ -585,5 +586,13 @@ func TestFormValuesDoNotLeakBetweenActions(t *testing.T) {
 	m = asModel(t, tm)
 	if m.action.Name != "go" || m.form.Snapshot()["dest"] != "x" {
 		t.Fatalf("go's edits lost: action=%q snapshot=%v", m.action.Name, m.form.Snapshot())
+	}
+}
+
+func TestFormStateKeyDoesNotCollideOnSlashes(t *testing.T) {
+	first := Model{tool: config.Tool{ID: "a/b"}, action: config.Action{Name: "c"}}
+	second := Model{tool: config.Tool{ID: "a"}, action: config.Action{Name: "b/c"}}
+	if first.formKey() == second.formKey() {
+		t.Fatal("distinct tool/action pairs produced the same form-state key")
 	}
 }

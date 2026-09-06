@@ -6,6 +6,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -245,7 +246,7 @@ func validateParams(where string, params []Param) error {
 			return fmt.Errorf("%s: one of flag or positional is required for argv-safe placement", pwhere)
 		}
 		if hasFlag {
-			if !strings.HasPrefix(p.Flag, "-") || len(p.Flag) < 2 {
+			if !strings.HasPrefix(p.Flag, "-") || len(p.Flag) < 2 || p.Flag == "--" {
 				return fmt.Errorf("%s: unsafe flag %q: must look like -x or --long", pwhere, p.Flag)
 			}
 			if strings.ContainsAny(p.Flag, " \t\n=") {
@@ -304,7 +305,7 @@ func validateParams(where string, params []Param) error {
 			}
 			if p.Default != "" {
 				v, err := strconv.ParseFloat(p.Default, 64)
-				if err != nil {
+				if err != nil || math.IsNaN(v) || math.IsInf(v, 0) {
 					return fmt.Errorf("%s: number default %q is not numeric", pwhere, p.Default)
 				}
 				if p.Min != nil && v < *p.Min {
@@ -392,7 +393,7 @@ func ValidateValue(p Param, raw string) (string, error) {
 		return "", fmt.Errorf("%s: %q is not one of %s", p.Label, raw, strings.Join(p.Choices, ", "))
 	case ParamNumber:
 		v, err := strconv.ParseFloat(raw, 64)
-		if err != nil {
+		if err != nil || math.IsNaN(v) || math.IsInf(v, 0) {
 			return "", fmt.Errorf("%s: %q is not a number", p.Label, raw)
 		}
 		if p.Min != nil && v < *p.Min {

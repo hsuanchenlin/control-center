@@ -20,6 +20,11 @@ import (
 
 type screen int
 
+type formStateKey struct {
+	toolID     string
+	actionName string
+}
+
 const (
 	screenPalette screen = iota
 	screenAction
@@ -63,7 +68,7 @@ type Model struct {
 
 	// form / confirm
 	form      *form.Form
-	preserved map[string]form.Values // per tool/action, survives back navigation and reselect
+	preserved map[formStateKey]form.Values // per tool/action, survives back navigation and reselect
 	action    config.Action
 	spec      command.Spec
 	notice    string // transient status line (e.g. copy result)
@@ -90,7 +95,7 @@ func New(deps Deps) Model {
 		screen:    screenPalette,
 		filter:    ti,
 		matches:   deps.Registry.Tools(),
-		preserved: map[string]form.Values{},
+		preserved: map[formStateKey]form.Values{},
 	}
 	return m
 }
@@ -212,8 +217,8 @@ func (m *Model) applyFilter() {
 
 // formKey identifies a tool/action pair so preserved form values never leak
 // between actions that happen to share param keys.
-func (m Model) formKey() string {
-	return m.tool.ID + "/" + m.action.Name
+func (m Model) formKey() formStateKey {
+	return formStateKey{toolID: m.tool.ID, actionName: m.action.Name}
 }
 
 // enterTool moves from the palette into the action picker, or straight into
