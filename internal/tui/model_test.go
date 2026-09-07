@@ -98,6 +98,10 @@ type nopTerminal struct{}
 func (nopTerminal) Release() error { return nil }
 func (nopTerminal) Restore() error { return nil }
 
+type fakeClock struct{ now time.Time }
+
+func (c *fakeClock) Now() time.Time { return c.now }
+
 func newTestModel(t *testing.T) (Model, *fakeClipboard) {
 	t.Helper()
 	cfg, err := config.Parse([]byte(modelManifest), "test")
@@ -119,6 +123,14 @@ func newTestModel(t *testing.T) (Model, *fakeClipboard) {
 	})
 	m.width, m.height = 100, 40
 	return m, clip
+}
+
+func newTestModelWithClock(t *testing.T, clock executor.Clock) Model {
+	t.Helper()
+	m, _ := newTestModel(t)
+	m.deps.Clock = clock
+	m.signals.clock = clock
+	return m
 }
 
 func key(t tea.KeyType, runes ...rune) tea.KeyMsg {
@@ -388,13 +400,44 @@ func TestCtrlCInterruptsChildBeforeQuitting(t *testing.T) {
 	// Second Ctrl-C requests force-stop but waits for cleanup before quitting.
 	tm, cmd = m.Update(key(tea.KeyCtrlC))
 	m = asModel(t, tm)
-	if !m.quitting || cmd != nil {
+	if !m.shuttingDown || m.quitting || cmd != nil {
 		t.Fatal("second ctrl+c did not defer quitting until child completion")
 	}
 	tm, cmd = m.Update(childDoneMsg(executor.Result{Interrupted: true}))
 	m = asModel(t, tm)
-	if cmd == nil || m.running {
+	if cmd == nil || m.running || !m.quitting {
 		t.Fatal("child completion did not quit after cleanup")
+	}
+}
+
+func TestForcedShutdownKeepsNoticeVisibleWhileChildIsReaped(t *testing.T) {
+	m, _ := newTestModel(t)
+	tm, _ := m.Update(runes("plain"))
+	m = asModel(t, tm)
+	tm, _ = m.Update(key(tea.KeyEnter))
+	m = asModel(t, tm)
+	tm, _ = m.Update(key(tea.KeyEnter)) // start run
+	m = asModel(t, tm)
+	tm, _ = m.Update(key(tea.KeyCtrlC))
+	m = asModel(t, tm)
+	tm, _ = m.Update(key(tea.KeyCtrlC)) // force-stop, quit deferred
+	m = asModel(t, tm)
+
+	view := m.View()
+	if view == "" {
+		t.Fatal("deferred quit blanked the screen before the child was reaped")
+	}
+	if !strings.Contains(view, "stopping child") {
+		t.Fatalf("shutdown notice not rendered:\n%s", view)
+	}
+	if !strings.Contains(view, "waiting for the child to be reaped") {
+		t.Fatalf("footer still advertises interrupt controls:\n%s", view)
+	}
+	// Only the actual quit blanks the screen.
+	tm, _ = m.Update(childDoneMsg(executor.Result{Interrupted: true}))
+	m = asModel(t, tm)
+	if m.View() != "" {
+		t.Fatalf("view not blanked after quitting:\n%s", m.View())
 	}
 }
 
@@ -406,7 +449,7 @@ func TestPassthroughCtrlCRemainsOwnedByChild(t *testing.T) {
 	m.control = executor.NewRunControl()
 	tm, cmd := m.Update(key(tea.KeyCtrlC))
 	m = asModel(t, tm)
-	if m.quitting || m.interruptRequested || cmd != nil {
+	if m.quitting || m.shuttingDown || m.notice != "" || cmd != nil {
 		t.Fatal("parent handled passthrough Ctrl-C")
 	}
 	res := executor.Result{RestoreErr: errors.New("restore failed")}
@@ -427,24 +470,25 @@ func TestProcessSignalsFollowActiveRunLifecycle(t *testing.T) {
 	routed := m.signals.route(os.Interrupt)
 	tm, cmd := m.Update(signalMsg(routed))
 	m = asModel(t, tm)
-	if !m.interruptRequested || m.quitting || cmd != nil {
+	if !strings.Contains(m.notice, "interrupting child") || m.shuttingDown || m.quitting || cmd != nil {
 		t.Fatal("first process interrupt did not interrupt capture")
 	}
 	routed = m.signals.route(syscall.SIGTERM)
 	tm, cmd = m.Update(signalMsg(routed))
 	m = asModel(t, tm)
-	if !m.quitting || cmd != nil {
+	if !m.shuttingDown || m.quitting || cmd != nil {
 		t.Fatal("termination signal did not defer quit for cleanup")
 	}
 	tm, cmd = m.Update(childDoneMsg(executor.Result{Interrupted: true}))
 	m = asModel(t, tm)
-	if cmd == nil || m.running {
+	if cmd == nil || m.running || !m.quitting {
 		t.Fatal("capture cleanup did not complete pending signal shutdown")
 	}
 }
 
 func TestDelayedPassthroughInterruptCannotQuitIdleModel(t *testing.T) {
-	m, _ := newTestModel(t)
+	clock := &fakeClock{now: time.Unix(1000, 0)}
+	m := newTestModelWithClock(t, clock)
 	control := executor.NewRunControl()
 	generation := m.signals.begin(control, true)
 	if pending := m.signals.end(generation); pending {
@@ -455,6 +499,43 @@ func TestDelayedPassthroughInterruptCannotQuitIdleModel(t *testing.T) {
 	m = asModel(t, tm)
 	if m.quitting || cmd != nil {
 		t.Fatal("delayed passthrough interrupt quit idle model")
+	}
+
+	// Once the passthrough hand-back window closes, an interrupt is the
+	// operator asking control-center itself to stop.
+	clock.now = clock.now.Add(passthroughInterruptGrace)
+	routed = m.signals.route(os.Interrupt)
+	tm, cmd = m.Update(signalMsg(routed))
+	m = asModel(t, tm)
+	if !m.quitting || cmd == nil {
+		t.Fatal("interrupt after the passthrough grace window did not quit")
+	}
+}
+
+func TestIdleExternalInterruptQuits(t *testing.T) {
+	// kill -INT with no child running must still stop control-center; the
+	// program installs tea.WithoutSignalHandler, so this is the only path.
+	m, _ := newTestModel(t)
+	routed := m.signals.route(os.Interrupt)
+	if routed.action != signalQuit {
+		t.Fatalf("idle interrupt routed as %v, want signalQuit", routed.action)
+	}
+	tm, cmd := m.Update(signalMsg(routed))
+	m = asModel(t, tm)
+	if !m.quitting || cmd == nil {
+		t.Fatal("idle external interrupt did not quit the app")
+	}
+}
+
+func TestCaptureRunEndDoesNotSuppressLaterInterrupt(t *testing.T) {
+	// The suppression window belongs to passthrough alone; a capture run must
+	// not swallow the next external interrupt.
+	clock := &fakeClock{now: time.Unix(2000, 0)}
+	m := newTestModelWithClock(t, clock)
+	generation := m.signals.begin(executor.NewRunControl(), false)
+	m.signals.end(generation)
+	if routed := m.signals.route(os.Interrupt); routed.action != signalQuit {
+		t.Fatalf("interrupt after a capture run routed as %v, want signalQuit", routed.action)
 	}
 }
 

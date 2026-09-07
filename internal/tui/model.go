@@ -42,6 +42,9 @@ type Deps struct {
 	Clipboard executor.Clipboard
 	Terminal  executor.Terminal // required only when a tool uses passthrough
 	Signals   <-chan os.Signal
+	// Clock bounds the window in which a passthrough run's interrupt is still
+	// treated as the child's; defaults to executor.SystemClock.
+	Clock executor.Clock
 	// MaxOutputLines bounds the retained child output (default 5000).
 	MaxOutputLines int
 }
@@ -76,10 +79,25 @@ type activeRun struct {
 	pendingQuit bool
 }
 
+// passthroughInterruptGrace bounds how long after a passthrough run ends the
+// parent's copy of the terminal's Ctrl-C may still arrive. Inside the window
+// that interrupt belongs to the child that just exited; outside it, an
+// interrupt is the operator asking control-center itself to stop.
+const passthroughInterruptGrace = 500 * time.Millisecond
+
 type signalLifecycle struct {
-	mu     sync.Mutex
-	next   uint64
-	active *activeRun
+	mu         sync.Mutex
+	clock      executor.Clock
+	next       uint64
+	active     *activeRun
+	graceUntil time.Time
+}
+
+func (s *signalLifecycle) now() time.Time {
+	if s.clock != nil {
+		return s.clock.Now()
+	}
+	return time.Now()
 }
 
 func (s *signalLifecycle) begin(control *executor.RunControl, passthrough bool) uint64 {
@@ -93,8 +111,9 @@ func (s *signalLifecycle) begin(control *executor.RunControl, passthrough bool) 
 func (s *signalLifecycle) route(sig os.Signal) routedSignal {
 	s.mu.Lock()
 	if s.active == nil {
+		delayedPassthrough := sig == os.Interrupt && s.now().Before(s.graceUntil)
 		s.mu.Unlock()
-		if sig == os.Interrupt {
+		if delayedPassthrough {
 			return routedSignal{action: signalIgnored}
 		}
 		return routedSignal{action: signalQuit}
@@ -127,6 +146,9 @@ func (s *signalLifecycle) end(generation uint64) bool {
 	if s.active == nil || s.active.generation != generation {
 		return false
 	}
+	if s.active.passthrough {
+		s.graceUntil = s.now().Add(passthroughInterruptGrace)
+	}
 	pendingQuit := s.active.pendingQuit
 	s.active = nil
 	return pendingQuit
@@ -156,17 +178,20 @@ type Model struct {
 	notice    string // transient status line (e.g. copy result)
 
 	// output
-	viewport           viewport.Model
-	buffer             *executor.LineBuffer
-	rendered           int // buffer version last drawn into the viewport
-	running            bool
-	interruptRequested bool
-	control            *executor.RunControl
-	result             *executor.Result
-	quitting           bool
-	runGeneration      uint64
-	signals            *signalLifecycle
-	fatalErr           error
+	viewport viewport.Model
+	buffer   *executor.LineBuffer
+	rendered int // buffer version last drawn into the viewport
+	running  bool
+	control  *executor.RunControl
+	result   *executor.Result
+	// shuttingDown means a force-stop was requested and the app quits as soon
+	// as the child is reaped; quitting means tea.Quit has been returned and
+	// the screen is blanked, so the two must never be conflated.
+	shuttingDown  bool
+	quitting      bool
+	runGeneration uint64
+	signals       *signalLifecycle
+	fatalErr      error
 }
 
 // New builds the root model.
@@ -182,7 +207,7 @@ func New(deps Deps) Model {
 		filter:    ti,
 		matches:   deps.Registry.Tools(),
 		preserved: map[formStateKey]form.Values{},
-		signals:   &signalLifecycle{},
+		signals:   &signalLifecycle{clock: deps.Clock},
 	}
 	return m
 }
@@ -215,11 +240,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				routed := m.signals.route(os.Interrupt)
 				if routed.action == signalForced {
-					m.quitting = true
+					m.shuttingDown = true
 					m.notice = "stopping child…"
 					return m, nil
 				}
-				m.interruptRequested = true
 				m.notice = "interrupting child… (Ctrl-C again to quit)"
 				return m, nil
 			}
@@ -239,11 +263,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		switch routed.action {
 		case signalInterrupted:
-			m.interruptRequested = true
 			m.notice = "interrupting child… (Ctrl-C again to quit)"
 		case signalForced:
-			m.interruptRequested = true
-			m.quitting = true
+			m.shuttingDown = true
 			m.notice = "stopping child…"
 		}
 		return m, cmd
@@ -252,7 +274,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		res := executor.Result(msg)
 		m.result = &res
 		m.running = false
-		m.interruptRequested = false
 		pendingQuit := m.signals.end(m.runGeneration)
 		m.control = nil
 		m.notice = ""
@@ -262,7 +283,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.quitting = true
 			return m, tea.Quit
 		}
-		if m.quitting || pendingQuit {
+		if m.shuttingDown || pendingQuit {
 			m.quitting = true
 			return m, tea.Quit
 		}
@@ -491,7 +512,6 @@ func (m Model) updateConfirm(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m Model) startRun() (tea.Model, tea.Cmd) {
 	m.notice = ""
 	m.rendered = -1
-	m.interruptRequested = false
 	if _, err := m.deps.Runner.Resolve(m.spec.Executable); err != nil {
 		res := executor.Result{Err: err}
 		m.result = &res

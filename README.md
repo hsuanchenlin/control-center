@@ -135,8 +135,16 @@ Single-letter shortcuts never fire while a text field is focused.
   child owns Ctrl-C while passthrough is active;
   control-center waits for it to exit and then restores the terminal.
 - In capture mode, Ctrl-C interrupts the child first (SIGINT, escalating to
-  a kill if the child ignores it). A second Ctrl-C force-stops it, and
-  control-center exits only after the child has been reaped.
+  a kill if the child ignores it). A second Ctrl-C force-stops it, shows a
+  "stopping child" notice, and control-center exits only after the child has
+  been reaped.
+- Signals delivered from outside the terminal follow the same contract.
+  `SIGTERM` always force-stops a running child and exits once it is reaped.
+  An external `SIGINT` (`kill -INT <pid>`) interrupts a captured child on the
+  first delivery and force-stops it on the second; with no child running it
+  quits control-center. The one exception is the brief window right after a
+  passthrough child exits, where an interrupt is ignored because the terminal
+  already delivered that Ctrl-C to the child.
 - control-center makes no network connections of its own. Whatever a
   launched child does (e.g. a tool's own update check) is that tool's
   behavior. No telemetry, no background server, nothing persisted.

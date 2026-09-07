@@ -117,18 +117,18 @@ func (m Model) viewOutput() string {
 		header += okStyle.Render(fmt.Sprintf("- done in %s", m.result.Elapsed.Round(1e6)))
 	}
 	b.WriteString(header + "\n")
-	if m.result != nil && m.result.RestoreErr != nil {
-		b.WriteString(errStyle.Render("terminal restore failed: "+m.result.RestoreErr.Error()) + "\n")
-	}
 	b.WriteString("\n")
 	b.WriteString(m.viewport.View())
 	if m.notice != "" {
 		b.WriteString("\n" + dimStyle.Render(m.notice))
 	}
 	if m.running {
-		if m.tool.Output == config.OutputPassthrough {
+		switch {
+		case m.shuttingDown:
+			b.WriteString("\n" + dimStyle.Render("waiting for the child to be reaped before exiting"))
+		case m.tool.Output == config.OutputPassthrough:
 			b.WriteString("\n" + dimStyle.Render("Ctrl-C belongs to the child · waiting for it to exit"))
-		} else {
+		default:
 			b.WriteString("\n" + dimStyle.Render("↑/↓ scroll · Ctrl-C interrupt child · Ctrl-C again force-stop and exit"))
 		}
 	} else {

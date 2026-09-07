@@ -125,6 +125,7 @@ func runTUI(cfg *config.Config) int {
 		Clipboard: executor.SystemClipboard{},
 		Terminal:  term,
 		Signals:   signals,
+		Clock:     executor.SystemClock{},
 	})
 	p := tea.NewProgram(model, tea.WithAltScreen(), tea.WithoutSignalHandler())
 	term.p = p
