@@ -91,7 +91,7 @@ func (m Model) viewConfirm() string {
 	b.WriteString(sectionStyle.Render("About to run:") + "\n\n")
 	b.WriteString("  " + cmdStyle.Render(m.spec.Display) + "\n")
 	if m.tool.Output == "passthrough" {
-		b.WriteString("\n" + dimStyle.Render("This tool takes over the terminal while it runs."))
+		b.WriteString("\n" + dimStyle.Render("This tool takes over the terminal; Ctrl-C is handled by the tool."))
 	}
 	if m.notice != "" {
 		b.WriteString("\n\n" + okStyle.Render(m.notice))
@@ -125,7 +125,7 @@ func (m Model) viewOutput() string {
 		b.WriteString("\n" + dimStyle.Render(m.notice))
 	}
 	if m.running {
-		b.WriteString("\n" + dimStyle.Render("↑/↓ scroll · Ctrl-C interrupt child"))
+		b.WriteString("\n" + dimStyle.Render("↑/↓ scroll · Ctrl-C interrupt child · Ctrl-C again force-stop and exit"))
 	} else {
 		b.WriteString("\n" + dimStyle.Render("↑/↓ scroll · q/Esc back to palette · Ctrl-C exit"))
 	}

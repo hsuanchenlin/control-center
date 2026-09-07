@@ -4,7 +4,6 @@ package tui
 
 import (
 	"fmt"
-	"os"
 	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -39,7 +38,6 @@ type Deps struct {
 	Runner    *executor.Runner
 	Clipboard executor.Clipboard
 	Terminal  executor.Terminal // required only when a tool uses passthrough
-	Signals   <-chan os.Signal
 	// MaxOutputLines bounds the retained child output (default 5000).
 	MaxOutputLines int
 }
@@ -49,7 +47,6 @@ type (
 	outputTickMsg time.Time
 	childDoneMsg  executor.Result
 	copiedMsg     struct{ err error }
-	signalMsg     os.Signal
 )
 
 // Model is the root Bubble Tea model.
@@ -105,7 +102,7 @@ func New(deps Deps) Model {
 
 // Init starts the textinput blinker.
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(textinput.Blink, waitSignal(m.deps.Signals))
+	return textinput.Blink
 }
 
 // Update routes messages by screen.
@@ -126,6 +123,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Ctrl-C is global: interrupt a running child first, else quit.
 		if msg.Type == tea.KeyCtrlC {
 			if m.screen == screenOutput && m.running && m.control != nil {
+				if m.tool.Output == config.OutputPassthrough {
+					return m, nil
+				}
 				if m.interruptRequested {
 					m.quitting = true
 					m.control.ForceStop()
@@ -140,19 +140,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.quitting = true
 			return m, tea.Quit
 		}
-
-	case signalMsg:
-		cmd := waitSignal(m.deps.Signals)
-		if os.Signal(msg) == os.Interrupt {
-			updated, interruptCmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
-			return updated, tea.Batch(interruptCmd, cmd)
-		}
-		m.quitting = true
-		if m.running && m.control != nil {
-			m.control.ForceStop()
-			return m, cmd
-		}
-		return m, tea.Quit
 
 	case childDoneMsg:
 		res := executor.Result(msg)
@@ -427,13 +414,6 @@ func (m Model) startRun() (tea.Model, tea.Cmd) {
 		return childDoneMsg(runner.RunCaptureControlled(m.control, spec, buf, buf))
 	}
 	return m, tea.Batch(runCmd, tickCmd())
-}
-
-func waitSignal(signals <-chan os.Signal) tea.Cmd {
-	if signals == nil {
-		return nil
-	}
-	return func() tea.Msg { return signalMsg(<-signals) }
 }
 
 func (m Model) updateOutput(msg tea.Msg) (tea.Model, tea.Cmd) {

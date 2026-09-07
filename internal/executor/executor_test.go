@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -42,6 +43,7 @@ func TestHelperProcess(t *testing.T) {
 	case "deaf":
 		// Ignores SIGINT, so only the kill after WaitDelay ends it.
 		signal.Notify(make(chan os.Signal, 1), os.Interrupt)
+		fmt.Println("ready")
 		time.Sleep(30 * time.Second)
 	case "catchint":
 		// Traps SIGINT and exits successfully, simulating a graceful child.
@@ -192,11 +194,18 @@ func TestRunControlForceStopsAndReapsChild(t *testing.T) {
 	r := helperRunner(t)
 	r.KillDelay = 30 * time.Second
 	control := NewRunControl()
+	ready := &notifyWriter{ready: make(chan struct{})}
 	done := make(chan Result, 1)
 	go func() {
-		done <- r.RunCaptureControlled(control, helperSpec("deaf"), &strings.Builder{}, &strings.Builder{})
+		done <- r.RunCaptureControlled(control, helperSpec("deaf"), ready, &strings.Builder{})
 	}()
-	time.Sleep(200 * time.Millisecond)
+	select {
+	case <-ready.ready:
+	case res := <-done:
+		t.Fatalf("child exited before ready: %+v", res)
+	case <-time.After(3 * time.Second):
+		t.Fatal("child did not become ready")
+	}
 	control.Interrupt()
 	control.ForceStop()
 	select {
@@ -214,7 +223,8 @@ func TestRunControlForceStopRestoresPassthroughTerminal(t *testing.T) {
 	r.KillDelay = 30 * time.Second
 	r.StdinIsTerminal = func() bool { return true }
 	r.Stdin = strings.NewReader("")
-	r.Stdout = &strings.Builder{}
+	ready := &notifyWriter{ready: make(chan struct{})}
+	r.Stdout = ready
 	r.Stderr = &strings.Builder{}
 	control := NewRunControl()
 	term := &fakeTerminal{}
@@ -222,7 +232,13 @@ func TestRunControlForceStopRestoresPassthroughTerminal(t *testing.T) {
 	go func() {
 		done <- r.RunPassthroughControlled(control, helperSpec("deaf"), term)
 	}()
-	time.Sleep(200 * time.Millisecond)
+	select {
+	case <-ready.ready:
+	case res := <-done:
+		t.Fatalf("passthrough child exited before ready: %+v", res)
+	case <-time.After(3 * time.Second):
+		t.Fatal("passthrough child did not become ready")
+	}
 	control.Interrupt()
 	control.ForceStop()
 	select {
@@ -232,6 +248,37 @@ func TestRunControlForceStopRestoresPassthroughTerminal(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("passthrough force-stop did not finish cleanup")
+	}
+}
+
+type notifyWriter struct {
+	once  sync.Once
+	ready chan struct{}
+}
+
+func (w *notifyWriter) Write(p []byte) (int, error) {
+	w.once.Do(func() { close(w.ready) })
+	return len(p), nil
+}
+
+func TestPreCancelledRunsDoNotStartOrReleaseTerminal(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	started := false
+	r := helperRunner(t)
+	r.StartProcess = func(context.Context, string, []string, io.Writer, io.Writer) (func() (int, error), error) {
+		started = true
+		return func() (int, error) { return 0, nil }, nil
+	}
+	if res := r.RunCapture(ctx, helperSpec("echo"), io.Discard, io.Discard); !res.Interrupted {
+		t.Fatalf("pre-cancelled capture result = %+v", res)
+	}
+	term := &fakeTerminal{}
+	if res := r.RunPassthrough(ctx, helperSpec("echo"), term); !res.Interrupted {
+		t.Fatalf("pre-cancelled passthrough result = %+v", res)
+	}
+	if started || len(term.calls) != 0 {
+		t.Fatalf("pre-cancelled run started=%v terminal calls=%v", started, term.calls)
 	}
 }
 

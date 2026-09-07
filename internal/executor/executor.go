@@ -184,6 +184,9 @@ func (r *Runner) Resolve(executable string) (string, error) {
 // KillDelay passes; the run is then reported as Interrupted, never as a
 // success or a start failure, even when the child handles SIGINT and exits 0.
 func (r *Runner) RunCapture(ctx context.Context, spec command.Spec, stdout, stderr io.Writer) Result {
+	if ctx.Err() != nil {
+		return Result{Interrupted: true}
+	}
 	control := NewRunControl()
 	stop := context.AfterFunc(ctx, control.Interrupt)
 	defer stop()
@@ -277,6 +280,9 @@ func (r *Runner) startReal(control *RunControl, path string, args []string, stdi
 // terminal is always restored afterwards. Restoration errors are reported in
 // Result.RestoreErr, never discarded, including when the child also fails.
 func (r *Runner) RunPassthrough(ctx context.Context, spec command.Spec, term Terminal) Result {
+	if ctx.Err() != nil {
+		return Result{Interrupted: true}
+	}
 	control := NewRunControl()
 	stop := context.AfterFunc(ctx, control.Interrupt)
 	defer stop()

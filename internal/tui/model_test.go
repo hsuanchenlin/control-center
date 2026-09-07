@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -397,26 +396,22 @@ func TestCtrlCInterruptsChildBeforeQuitting(t *testing.T) {
 	}
 }
 
-func TestPassthroughSignalsWaitForCleanupBeforeQuitting(t *testing.T) {
+func TestPassthroughCtrlCRemainsOwnedByChild(t *testing.T) {
 	m, _ := newTestModel(t)
 	m.screen = screenOutput
 	m.running = true
+	m.tool.Output = config.OutputPassthrough
 	m.control = executor.NewRunControl()
-
-	tm, cmd := m.Update(signalMsg(os.Interrupt))
+	tm, cmd := m.Update(key(tea.KeyCtrlC))
 	m = asModel(t, tm)
-	if m.quitting || cmd != nil {
-		t.Fatal("first passthrough signal quit instead of interrupting")
+	if m.quitting || m.interruptRequested || cmd != nil {
+		t.Fatal("parent handled passthrough Ctrl-C")
 	}
-	tm, cmd = m.Update(signalMsg(os.Interrupt))
+	res := executor.Result{RestoreErr: errors.New("restore failed")}
+	tm, cmd = m.Update(childDoneMsg(res))
 	m = asModel(t, tm)
-	if !m.quitting || cmd != nil {
-		t.Fatal("second passthrough signal did not defer quit")
-	}
-	tm, cmd = m.Update(childDoneMsg(executor.Result{Interrupted: true}))
-	m = asModel(t, tm)
-	if cmd == nil {
-		t.Fatal("passthrough cleanup completion did not quit")
+	if cmd != nil || !strings.Contains(m.View(), "terminal restore failed") {
+		t.Fatal("passthrough restore failure was not displayed")
 	}
 }
 

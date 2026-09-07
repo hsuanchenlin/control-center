@@ -113,7 +113,7 @@ control-center, and manifests are plain text.
 | Action      | ↑/↓ or Ctrl-P/Ctrl-N move · Enter select · Esc back · Ctrl-C exit    |
 | Form        | Type to edit · Tab/Shift-Tab move fields · Enter submit · Esc back (edits preserved) · Ctrl-C exit |
 | Confirm     | Enter run · `e` copy the command to the clipboard without running · Esc back · Ctrl-C exit |
-| Output      | ↑/↓ (PgUp/PgDn) scroll · Ctrl-C interrupt the child (again to exit) · `q`/Esc back to the palette once the child has finished |
+| Output      | Capture: ↑/↓ (PgUp/PgDn) scroll · Ctrl-C interrupt the child · Ctrl-C again force-stop and exit after cleanup · `q`/Esc back once finished. Passthrough: Ctrl-C belongs to the child; control-center resumes after it exits. |
 
 Single-letter shortcuts never fire while a text field is focused.
 
@@ -132,10 +132,11 @@ Single-letter shortcuts never fire while a text field is focused.
 - **passthrough** mode suspends the TUI and hands the terminal directly to
   the child, restoring the terminal afterwards even on error or interrupt;
   a failed restore is reported on the output screen, never silently
-  discarded.
-- Ctrl-C while a child runs interrupts the child first (SIGINT, escalating
-  to a kill if the child ignores it); the run is then reported as
-  interrupted. A second Ctrl-C exits control-center.
+  discarded. The child owns Ctrl-C while passthrough is active;
+  control-center waits for it to exit and then restores the terminal.
+- In capture mode, Ctrl-C interrupts the child first (SIGINT, escalating to
+  a kill if the child ignores it). A second Ctrl-C force-stops it, and
+  control-center exits only after the child has been reaped.
 - control-center makes no network connections of its own. Whatever a
   launched child does (e.g. a tool's own update check) is that tool's
   behavior. No telemetry, no background server, nothing persisted.
