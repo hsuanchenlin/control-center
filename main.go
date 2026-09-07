@@ -6,6 +6,8 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/hsuanchenlin/control-center/internal/config"
@@ -113,17 +115,26 @@ func (t *programTerminal) Release() error { return t.p.ReleaseTerminal() }
 func (t *programTerminal) Restore() error { return t.p.RestoreTerminal() }
 
 func runTUI(cfg *config.Config) int {
+	signals := make(chan os.Signal, 2)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(signals)
 	term := &programTerminal{}
 	model := tui.New(tui.Deps{
 		Registry:  registry.New(cfg),
 		Runner:    executor.NewRunner(),
 		Clipboard: executor.SystemClipboard{},
 		Terminal:  term,
+		Signals:   signals,
 	})
-	p := tea.NewProgram(model, tea.WithAltScreen())
+	p := tea.NewProgram(model, tea.WithAltScreen(), tea.WithoutSignalHandler())
 	term.p = p
-	if _, err := p.Run(); err != nil {
+	finalModel, err := p.Run()
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "control-center:", err)
+		return 1
+	}
+	if final, ok := finalModel.(tui.Model); ok && final.FatalError() != nil {
+		fmt.Fprintln(os.Stderr, "control-center:", final.FatalError())
 		return 1
 	}
 	return 0

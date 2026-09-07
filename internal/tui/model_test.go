@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -410,8 +412,64 @@ func TestPassthroughCtrlCRemainsOwnedByChild(t *testing.T) {
 	res := executor.Result{RestoreErr: errors.New("restore failed")}
 	tm, cmd = m.Update(childDoneMsg(res))
 	m = asModel(t, tm)
-	if cmd != nil || !strings.Contains(m.View(), "terminal restore failed") {
-		t.Fatal("passthrough restore failure was not displayed")
+	if cmd == nil || m.FatalError() == nil {
+		t.Fatal("passthrough restore failure was not propagated to shutdown")
+	}
+}
+
+func TestProcessSignalsFollowActiveRunLifecycle(t *testing.T) {
+	m, _ := newTestModel(t)
+	m.screen = screenOutput
+	m.running = true
+	m.control = executor.NewRunControl()
+	m.runGeneration = m.signals.begin(m.control, false)
+
+	routed := m.signals.route(os.Interrupt)
+	tm, cmd := m.Update(signalMsg(routed))
+	m = asModel(t, tm)
+	if !m.interruptRequested || m.quitting || cmd != nil {
+		t.Fatal("first process interrupt did not interrupt capture")
+	}
+	routed = m.signals.route(syscall.SIGTERM)
+	tm, cmd = m.Update(signalMsg(routed))
+	m = asModel(t, tm)
+	if !m.quitting || cmd != nil {
+		t.Fatal("termination signal did not defer quit for cleanup")
+	}
+	tm, cmd = m.Update(childDoneMsg(executor.Result{Interrupted: true}))
+	m = asModel(t, tm)
+	if cmd == nil || m.running {
+		t.Fatal("capture cleanup did not complete pending signal shutdown")
+	}
+}
+
+func TestDelayedPassthroughInterruptCannotQuitIdleModel(t *testing.T) {
+	m, _ := newTestModel(t)
+	control := executor.NewRunControl()
+	generation := m.signals.begin(control, true)
+	if pending := m.signals.end(generation); pending {
+		t.Fatal("passthrough ended with unexpected pending quit")
+	}
+	routed := m.signals.route(os.Interrupt)
+	tm, cmd := m.Update(signalMsg(routed))
+	m = asModel(t, tm)
+	if m.quitting || cmd != nil {
+		t.Fatal("delayed passthrough interrupt quit idle model")
+	}
+}
+
+func TestRunningFooterMatchesOutputMode(t *testing.T) {
+	m, _ := newTestModel(t)
+	m.screen = screenOutput
+	m.running = true
+	m.viewport = viewport.New(80, 10)
+	m.tool.Output = config.OutputPassthrough
+	if view := m.View(); !strings.Contains(view, "Ctrl-C belongs to the child") || strings.Contains(view, "force-stop") {
+		t.Fatalf("passthrough footer = %q", view)
+	}
+	m.tool.Output = config.OutputCapture
+	if view := m.View(); !strings.Contains(view, "force-stop and exit") {
+		t.Fatalf("capture footer = %q", view)
 	}
 }
 

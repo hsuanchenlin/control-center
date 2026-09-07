@@ -4,6 +4,9 @@ package tui
 
 import (
 	"fmt"
+	"os"
+	"sync"
+	"syscall"
 	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -38,6 +41,7 @@ type Deps struct {
 	Runner    *executor.Runner
 	Clipboard executor.Clipboard
 	Terminal  executor.Terminal // required only when a tool uses passthrough
+	Signals   <-chan os.Signal
 	// MaxOutputLines bounds the retained child output (default 5000).
 	MaxOutputLines int
 }
@@ -47,7 +51,86 @@ type (
 	outputTickMsg time.Time
 	childDoneMsg  executor.Result
 	copiedMsg     struct{ err error }
+	signalMsg     routedSignal
 )
+
+type signalAction int
+
+const (
+	signalIgnored signalAction = iota
+	signalInterrupted
+	signalForced
+	signalQuit
+)
+
+type routedSignal struct {
+	generation uint64
+	action     signalAction
+}
+
+type activeRun struct {
+	generation  uint64
+	control     *executor.RunControl
+	passthrough bool
+	interrupted bool
+	pendingQuit bool
+}
+
+type signalLifecycle struct {
+	mu     sync.Mutex
+	next   uint64
+	active *activeRun
+}
+
+func (s *signalLifecycle) begin(control *executor.RunControl, passthrough bool) uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.next++
+	s.active = &activeRun{generation: s.next, control: control, passthrough: passthrough}
+	return s.next
+}
+
+func (s *signalLifecycle) route(sig os.Signal) routedSignal {
+	s.mu.Lock()
+	if s.active == nil {
+		s.mu.Unlock()
+		if sig == os.Interrupt {
+			return routedSignal{action: signalIgnored}
+		}
+		return routedSignal{action: signalQuit}
+	}
+	run := s.active
+	if run.passthrough && sig == os.Interrupt {
+		s.mu.Unlock()
+		return routedSignal{generation: run.generation, action: signalIgnored}
+	}
+	if sig == syscall.SIGTERM || run.interrupted {
+		run.pendingQuit = true
+		run.interrupted = true
+		control := run.control
+		generation := run.generation
+		s.mu.Unlock()
+		control.ForceStop()
+		return routedSignal{generation: generation, action: signalForced}
+	}
+	run.interrupted = true
+	control := run.control
+	generation := run.generation
+	s.mu.Unlock()
+	control.Interrupt()
+	return routedSignal{generation: generation, action: signalInterrupted}
+}
+
+func (s *signalLifecycle) end(generation uint64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.active == nil || s.active.generation != generation {
+		return false
+	}
+	pendingQuit := s.active.pendingQuit
+	s.active = nil
+	return pendingQuit
+}
 
 // Model is the root Bubble Tea model.
 type Model struct {
@@ -81,6 +164,9 @@ type Model struct {
 	control            *executor.RunControl
 	result             *executor.Result
 	quitting           bool
+	runGeneration      uint64
+	signals            *signalLifecycle
+	fatalErr           error
 }
 
 // New builds the root model.
@@ -96,13 +182,14 @@ func New(deps Deps) Model {
 		filter:    ti,
 		matches:   deps.Registry.Tools(),
 		preserved: map[formStateKey]form.Values{},
+		signals:   &signalLifecycle{},
 	}
 	return m
 }
 
 // Init starts the textinput blinker.
 func (m Model) Init() tea.Cmd {
-	return textinput.Blink
+	return tea.Batch(textinput.Blink, waitSignal(m.deps.Signals, m.signals))
 }
 
 // Update routes messages by screen.
@@ -126,13 +213,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.tool.Output == config.OutputPassthrough {
 					return m, nil
 				}
-				if m.interruptRequested {
+				routed := m.signals.route(os.Interrupt)
+				if routed.action == signalForced {
 					m.quitting = true
-					m.control.ForceStop()
 					m.notice = "stopping child…"
 					return m, nil
 				}
-				m.control.Interrupt()
 				m.interruptRequested = true
 				m.notice = "interrupting child… (Ctrl-C again to quit)"
 				return m, nil
@@ -141,15 +227,43 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 
+	case signalMsg:
+		routed := routedSignal(msg)
+		cmd := waitSignal(m.deps.Signals, m.signals)
+		if routed.action == signalQuit {
+			m.quitting = true
+			return m, tea.Quit
+		}
+		if routed.generation != m.runGeneration {
+			return m, cmd
+		}
+		switch routed.action {
+		case signalInterrupted:
+			m.interruptRequested = true
+			m.notice = "interrupting child… (Ctrl-C again to quit)"
+		case signalForced:
+			m.interruptRequested = true
+			m.quitting = true
+			m.notice = "stopping child…"
+		}
+		return m, cmd
+
 	case childDoneMsg:
 		res := executor.Result(msg)
 		m.result = &res
 		m.running = false
 		m.interruptRequested = false
+		pendingQuit := m.signals.end(m.runGeneration)
 		m.control = nil
 		m.notice = ""
 		m.refreshViewport()
-		if m.quitting {
+		if res.RestoreErr != nil {
+			m.fatalErr = res.RestoreErr
+			m.quitting = true
+			return m, tea.Quit
+		}
+		if m.quitting || pendingQuit {
+			m.quitting = true
 			return m, tea.Quit
 		}
 		return m, nil
@@ -395,6 +509,7 @@ func (m Model) startRun() (tea.Model, tea.Cmd) {
 	m.refreshViewport()
 
 	m.control = executor.NewRunControl()
+	m.runGeneration = m.signals.begin(m.control, m.tool.Output == config.OutputPassthrough)
 
 	if m.tool.Output == config.OutputPassthrough {
 		runner := m.deps.Runner
@@ -414,6 +529,19 @@ func (m Model) startRun() (tea.Model, tea.Cmd) {
 		return childDoneMsg(runner.RunCaptureControlled(m.control, spec, buf, buf))
 	}
 	return m, tea.Batch(runCmd, tickCmd())
+}
+
+func waitSignal(signals <-chan os.Signal, lifecycle *signalLifecycle) tea.Cmd {
+	if signals == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		return signalMsg(lifecycle.route(<-signals))
+	}
+}
+
+func (m Model) FatalError() error {
+	return m.fatalErr
 }
 
 func (m Model) updateOutput(msg tea.Msg) (tea.Model, tea.Cmd) {

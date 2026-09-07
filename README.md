@@ -131,8 +131,8 @@ Single-letter shortcuts never fire while a text field is focused.
   output, nonzero exits, and missing executables.
 - **passthrough** mode suspends the TUI and hands the terminal directly to
   the child, restoring the terminal afterwards even on error or interrupt;
-  a failed restore is reported on the output screen, never silently
-  discarded. The child owns Ctrl-C while passthrough is active;
+  a failed restore is reported on stderr before control-center exits. The
+  child owns Ctrl-C while passthrough is active;
   control-center waits for it to exit and then restores the terminal.
 - In capture mode, Ctrl-C interrupts the child first (SIGINT, escalating to
   a kill if the child ignores it). A second Ctrl-C force-stops it, and

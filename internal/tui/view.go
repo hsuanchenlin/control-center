@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/hsuanchenlin/control-center/internal/config"
 )
 
 var (
@@ -125,7 +126,11 @@ func (m Model) viewOutput() string {
 		b.WriteString("\n" + dimStyle.Render(m.notice))
 	}
 	if m.running {
-		b.WriteString("\n" + dimStyle.Render("↑/↓ scroll · Ctrl-C interrupt child · Ctrl-C again force-stop and exit"))
+		if m.tool.Output == config.OutputPassthrough {
+			b.WriteString("\n" + dimStyle.Render("Ctrl-C belongs to the child · waiting for it to exit"))
+		} else {
+			b.WriteString("\n" + dimStyle.Render("↑/↓ scroll · Ctrl-C interrupt child · Ctrl-C again force-stop and exit"))
+		}
 	} else {
 		b.WriteString("\n" + dimStyle.Render("↑/↓ scroll · q/Esc back to palette · Ctrl-C exit"))
 	}
