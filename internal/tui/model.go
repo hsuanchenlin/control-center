@@ -74,13 +74,14 @@ type Model struct {
 	notice    string // transient status line (e.g. copy result)
 
 	// output
-	viewport viewport.Model
-	buffer   *executor.LineBuffer
-	rendered int // buffer version last drawn into the viewport
-	running  bool
-	cancel   context.CancelFunc
-	result   *executor.Result
-	quitting bool
+	viewport           viewport.Model
+	buffer             *executor.LineBuffer
+	rendered           int // buffer version last drawn into the viewport
+	running            bool
+	interruptRequested bool
+	cancel             context.CancelFunc
+	result             *executor.Result
+	quitting           bool
 }
 
 // New builds the root model.
@@ -123,7 +124,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Ctrl-C is global: interrupt a running child first, else quit.
 		if msg.Type == tea.KeyCtrlC {
 			if m.screen == screenOutput && m.running && m.cancel != nil {
+				if m.interruptRequested {
+					m.quitting = true
+					return m, tea.Quit
+				}
 				m.cancel()
+				m.interruptRequested = true
 				m.notice = "interrupting child… (Ctrl-C again to quit)"
 				return m, nil
 			}
@@ -135,6 +141,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		res := executor.Result(msg)
 		m.result = &res
 		m.running = false
+		m.interruptRequested = false
+		if m.cancel != nil {
+			m.cancel()
+			m.cancel = nil
+		}
 		m.notice = ""
 		m.refreshViewport()
 		return m, nil
@@ -362,6 +373,7 @@ func (m Model) updateConfirm(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m Model) startRun() (tea.Model, tea.Cmd) {
 	m.notice = ""
 	m.rendered = -1
+	m.interruptRequested = false
 	if _, err := m.deps.Runner.Resolve(m.spec.Executable); err != nil {
 		res := executor.Result{Err: err}
 		m.result = &res
@@ -432,6 +444,7 @@ func (m *Model) refreshViewport() {
 		// Nothing new arrived since the last tick; skip the rebuild.
 		return
 	}
+	followOutput := m.viewport.AtBottom()
 	m.rendered = version
 	content := m.buffer.Content()
 	if m.buffer.Dropped() > 0 {
@@ -441,7 +454,7 @@ func (m *Model) refreshViewport() {
 		content = "(no output)"
 	}
 	m.viewport.SetContent(content)
-	if m.running {
+	if m.running && followOutput {
 		m.viewport.GotoBottom()
 	}
 }

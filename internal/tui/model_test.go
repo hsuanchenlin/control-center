@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/hsuanchenlin/control-center/internal/config"
 	"github.com/hsuanchenlin/control-center/internal/executor"
@@ -383,12 +384,10 @@ func TestCtrlCInterruptsChildBeforeQuitting(t *testing.T) {
 		t.Fatal("first ctrl+c quit the app instead of interrupting the child")
 	}
 	// Second Ctrl-C quits.
-	m.running = false
-	m.cancel = nil
 	tm, cmd = m.Update(key(tea.KeyCtrlC))
 	m = asModel(t, tm)
 	if !m.quitting || cmd == nil {
-		t.Fatal("second ctrl+c did not quit")
+		t.Fatal("second ctrl+c did not quit before child completion")
 	}
 }
 
@@ -508,6 +507,35 @@ func TestRunningOutputFollowsPartialLines(t *testing.T) {
 	m = asModel(t, tm)
 	if !strings.Contains(m.viewport.View(), "progress 20%") {
 		t.Fatalf("viewport did not follow output appended to the current line:\n%s", m.viewport.View())
+	}
+}
+
+func TestRunningOutputPreservesScrollPositionUntilBottom(t *testing.T) {
+	m, _ := newTestModel(t)
+	m.screen = screenOutput
+	m.running = true
+	m.rendered = -1
+	m.buffer = executor.NewLineBuffer(100)
+	m.viewport = viewport.New(40, 3)
+	m.buffer.Write([]byte("one\ntwo\nthree\nfour\nfive\nsix"))
+	m.refreshViewport()
+	if !m.viewport.AtBottom() {
+		t.Fatal("initial output did not follow to bottom")
+	}
+
+	m.viewport.LineUp(2)
+	wantOffset := m.viewport.YOffset
+	m.buffer.Write([]byte("\nseven"))
+	m.refreshViewport()
+	if m.viewport.YOffset != wantOffset {
+		t.Fatalf("streaming output moved scroll position from %d to %d", wantOffset, m.viewport.YOffset)
+	}
+
+	m.viewport.GotoBottom()
+	m.buffer.Write([]byte("\neight"))
+	m.refreshViewport()
+	if !m.viewport.AtBottom() {
+		t.Fatal("output did not resume following after returning to bottom")
 	}
 }
 
