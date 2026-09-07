@@ -465,21 +465,19 @@ func TestProcessSignalsFollowActiveRunLifecycle(t *testing.T) {
 	m.screen = screenOutput
 	m.running = true
 	m.control = executor.NewRunControl()
-	m.runGeneration = m.signals.begin(m.control, false)
+	m.signals.begin(m.control, false)
 
-	routed := m.signals.route(os.Interrupt)
-	tm, cmd := m.Update(signalMsg(routed))
+	tm, _ := m.Update(signalMsg{sig: os.Interrupt})
 	m = asModel(t, tm)
-	if !strings.Contains(m.notice, "interrupting child") || m.shuttingDown || m.quitting || cmd != nil {
+	if !strings.Contains(m.notice, "interrupting child") || m.shuttingDown || m.quitting {
 		t.Fatal("first process interrupt did not interrupt capture")
 	}
-	routed = m.signals.route(syscall.SIGTERM)
-	tm, cmd = m.Update(signalMsg(routed))
+	tm, _ = m.Update(signalMsg{sig: syscall.SIGTERM})
 	m = asModel(t, tm)
-	if !m.shuttingDown || m.quitting || cmd != nil {
+	if !m.shuttingDown || m.quitting {
 		t.Fatal("termination signal did not defer quit for cleanup")
 	}
-	tm, cmd = m.Update(childDoneMsg(executor.Result{Interrupted: true}))
+	tm, cmd := m.Update(childDoneMsg(executor.Result{Interrupted: true}))
 	m = asModel(t, tm)
 	if cmd == nil || m.running || !m.quitting {
 		t.Fatal("capture cleanup did not complete pending signal shutdown")
@@ -489,23 +487,20 @@ func TestProcessSignalsFollowActiveRunLifecycle(t *testing.T) {
 func TestDelayedPassthroughInterruptCannotQuitIdleModel(t *testing.T) {
 	clock := &fakeClock{now: time.Unix(1000, 0)}
 	m := newTestModelWithClock(t, clock)
-	control := executor.NewRunControl()
-	generation := m.signals.begin(control, true)
-	if pending := m.signals.end(generation); pending {
+	m.signals.begin(executor.NewRunControl(), true)
+	if pending := m.signals.end(); pending {
 		t.Fatal("passthrough ended with unexpected pending quit")
 	}
-	routed := m.signals.route(os.Interrupt)
-	tm, cmd := m.Update(signalMsg(routed))
+	tm, _ := m.Update(signalMsg{sig: os.Interrupt})
 	m = asModel(t, tm)
-	if m.quitting || cmd != nil {
+	if m.quitting {
 		t.Fatal("delayed passthrough interrupt quit idle model")
 	}
 
 	// Once the passthrough hand-back window closes, an interrupt is the
 	// operator asking control-center itself to stop.
 	clock.now = clock.now.Add(passthroughInterruptGrace)
-	routed = m.signals.route(os.Interrupt)
-	tm, cmd = m.Update(signalMsg(routed))
+	tm, cmd := m.Update(signalMsg{sig: os.Interrupt})
 	m = asModel(t, tm)
 	if !m.quitting || cmd == nil {
 		t.Fatal("interrupt after the passthrough grace window did not quit")
@@ -516,26 +511,103 @@ func TestIdleExternalInterruptQuits(t *testing.T) {
 	// kill -INT with no child running must still stop control-center; the
 	// program installs tea.WithoutSignalHandler, so this is the only path.
 	m, _ := newTestModel(t)
-	routed := m.signals.route(os.Interrupt)
-	if routed.action != signalQuit {
-		t.Fatalf("idle interrupt routed as %v, want signalQuit", routed.action)
-	}
-	tm, cmd := m.Update(signalMsg(routed))
+	tm, cmd := m.Update(signalMsg{sig: os.Interrupt})
 	m = asModel(t, tm)
 	if !m.quitting || cmd == nil {
 		t.Fatal("idle external interrupt did not quit the app")
 	}
 }
 
-func TestCaptureRunEndDoesNotSuppressLaterInterrupt(t *testing.T) {
-	// The suppression window belongs to passthrough alone; a capture run must
-	// not swallow the next external interrupt.
+func TestPassthroughGraceWindowIsClosedByALaterRun(t *testing.T) {
+	// The suppression window belongs to the passthrough run that opened it. A
+	// capture run that starts and finishes inside the window must not inherit
+	// it and swallow an operator's kill -INT.
 	clock := &fakeClock{now: time.Unix(2000, 0)}
 	m := newTestModelWithClock(t, clock)
-	generation := m.signals.begin(executor.NewRunControl(), false)
-	m.signals.end(generation)
-	if routed := m.signals.route(os.Interrupt); routed.action != signalQuit {
-		t.Fatalf("interrupt after a capture run routed as %v, want signalQuit", routed.action)
+	m.signals.begin(executor.NewRunControl(), true)
+	m.signals.end()
+
+	m.signals.begin(executor.NewRunControl(), false)
+	m.signals.end()
+	if action := m.signals.route(os.Interrupt); action != signalQuit {
+		t.Fatalf("interrupt after a capture run routed as %v, want signalQuit", action)
+	}
+}
+
+func TestSignalIsRoutedAgainstStateAtDeliveryTime(t *testing.T) {
+	// A SIGINT that arrives while the model is idle must not quit past a run
+	// that started before Update got to the signal: routing happens inside
+	// Update, so the live child is interrupted and reaped instead.
+	m, _ := newTestModel(t)
+	tm, _ := m.Update(runes("plain"))
+	m = asModel(t, tm)
+	tm, _ = m.Update(key(tea.KeyEnter)) // confirm
+	m = asModel(t, tm)
+	tm, _ = m.Update(key(tea.KeyEnter)) // start run
+	m = asModel(t, tm)
+	if !m.running {
+		t.Fatal("run did not start")
+	}
+
+	tm, _ = m.Update(signalMsg{sig: os.Interrupt})
+	m = asModel(t, tm)
+	if m.quitting {
+		t.Fatal("interrupt quit past a live child instead of interrupting it")
+	}
+	if !strings.Contains(m.notice, "interrupting child") {
+		t.Fatalf("notice = %q", m.notice)
+	}
+	tm, cmd := m.Update(childDoneMsg(executor.Result{Interrupted: true}))
+	m = asModel(t, tm)
+	if m.quitting || cmd != nil {
+		t.Fatal("a single interrupt quit the app instead of returning to the output screen")
+	}
+}
+
+func TestSignalWatchRearmsAndForwardsRawSignals(t *testing.T) {
+	m, _ := newTestModel(t)
+	ch := make(chan os.Signal, 1)
+	m.deps.Signals = ch
+	m.screen = screenOutput
+	m.running = true
+	m.control = executor.NewRunControl()
+	m.signals.begin(m.control, false)
+
+	tm, cmd := m.Update(signalMsg{sig: os.Interrupt})
+	m = asModel(t, tm)
+	if cmd == nil {
+		t.Fatal("signal watch was not re-armed after routing")
+	}
+	ch <- syscall.SIGTERM
+	next, ok := cmd().(signalMsg)
+	if !ok || next.sig != syscall.SIGTERM {
+		t.Fatalf("re-armed watch delivered %#v, want the raw SIGTERM", next)
+	}
+	tm, _ = m.Update(next)
+	m = asModel(t, tm)
+	if !m.shuttingDown || m.quitting {
+		t.Fatal("re-delivered SIGTERM did not force-stop and defer the quit")
+	}
+}
+
+func TestSignalAfterChildCompletionDoesNotRepaintStaleNotice(t *testing.T) {
+	m, _ := newTestModel(t)
+	tm, _ := m.Update(runes("plain"))
+	m = asModel(t, tm)
+	tm, _ = m.Update(key(tea.KeyEnter))
+	m = asModel(t, tm)
+	tm, _ = m.Update(key(tea.KeyEnter)) // start run
+	m = asModel(t, tm)
+	tm, _ = m.Update(childDoneMsg(executor.Result{ExitCode: 0}))
+	m = asModel(t, tm)
+
+	tm, _ = m.Update(signalMsg{sig: os.Interrupt})
+	m = asModel(t, tm)
+	if strings.Contains(m.notice, "interrupting child") {
+		t.Fatalf("completed run repainted a stale interrupt notice: %q", m.notice)
+	}
+	if !m.quitting {
+		t.Fatal("interrupt on a finished capture run did not quit")
 	}
 }
 

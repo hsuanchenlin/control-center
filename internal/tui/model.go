@@ -54,7 +54,9 @@ type (
 	outputTickMsg time.Time
 	childDoneMsg  executor.Result
 	copiedMsg     struct{ err error }
-	signalMsg     routedSignal
+	// signalMsg carries the raw signal; it is routed inside Update so the
+	// decision is made against the same model state that applies it.
+	signalMsg struct{ sig os.Signal }
 )
 
 type signalAction int
@@ -66,13 +68,7 @@ const (
 	signalQuit
 )
 
-type routedSignal struct {
-	generation uint64
-	action     signalAction
-}
-
 type activeRun struct {
-	generation  uint64
 	control     *executor.RunControl
 	passthrough bool
 	interrupted bool
@@ -88,7 +84,6 @@ const passthroughInterruptGrace = 500 * time.Millisecond
 type signalLifecycle struct {
 	mu         sync.Mutex
 	clock      executor.Clock
-	next       uint64
 	active     *activeRun
 	graceUntil time.Time
 }
@@ -100,50 +95,50 @@ func (s *signalLifecycle) now() time.Time {
 	return time.Now()
 }
 
-func (s *signalLifecycle) begin(control *executor.RunControl, passthrough bool) uint64 {
+// begin takes ownership of a freshly started run. Any suppression window left
+// by an earlier passthrough run is closed here: the window belongs to the run
+// that opened it and never to a later one.
+func (s *signalLifecycle) begin(control *executor.RunControl, passthrough bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.next++
-	s.active = &activeRun{generation: s.next, control: control, passthrough: passthrough}
-	return s.next
+	s.graceUntil = time.Time{}
+	s.active = &activeRun{control: control, passthrough: passthrough}
 }
 
-func (s *signalLifecycle) route(sig os.Signal) routedSignal {
+func (s *signalLifecycle) route(sig os.Signal) signalAction {
 	s.mu.Lock()
 	if s.active == nil {
 		delayedPassthrough := sig == os.Interrupt && s.now().Before(s.graceUntil)
 		s.mu.Unlock()
 		if delayedPassthrough {
-			return routedSignal{action: signalIgnored}
+			return signalIgnored
 		}
-		return routedSignal{action: signalQuit}
+		return signalQuit
 	}
 	run := s.active
 	if run.passthrough && sig == os.Interrupt {
 		s.mu.Unlock()
-		return routedSignal{generation: run.generation, action: signalIgnored}
+		return signalIgnored
 	}
 	if sig == syscall.SIGTERM || run.interrupted {
 		run.pendingQuit = true
 		run.interrupted = true
 		control := run.control
-		generation := run.generation
 		s.mu.Unlock()
 		control.ForceStop()
-		return routedSignal{generation: generation, action: signalForced}
+		return signalForced
 	}
 	run.interrupted = true
 	control := run.control
-	generation := run.generation
 	s.mu.Unlock()
 	control.Interrupt()
-	return routedSignal{generation: generation, action: signalInterrupted}
+	return signalInterrupted
 }
 
-func (s *signalLifecycle) end(generation uint64) bool {
+func (s *signalLifecycle) end() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.active == nil || s.active.generation != generation {
+	if s.active == nil {
 		return false
 	}
 	if s.active.passthrough {
@@ -187,11 +182,10 @@ type Model struct {
 	// shuttingDown means a force-stop was requested and the app quits as soon
 	// as the child is reaped; quitting means tea.Quit has been returned and
 	// the screen is blanked, so the two must never be conflated.
-	shuttingDown  bool
-	quitting      bool
-	runGeneration uint64
-	signals       *signalLifecycle
-	fatalErr      error
+	shuttingDown bool
+	quitting     bool
+	signals      *signalLifecycle
+	fatalErr     error
 }
 
 // New builds the root model.
@@ -214,7 +208,7 @@ func New(deps Deps) Model {
 
 // Init starts the textinput blinker.
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(textinput.Blink, waitSignal(m.deps.Signals, m.signals))
+	return tea.Batch(textinput.Blink, waitSignal(m.deps.Signals))
 }
 
 // Update routes messages by screen.
@@ -238,8 +232,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.tool.Output == config.OutputPassthrough {
 					return m, nil
 				}
-				routed := m.signals.route(os.Interrupt)
-				if routed.action == signalForced {
+				if m.signals.route(os.Interrupt) == signalForced {
 					m.shuttingDown = true
 					m.notice = "stopping child…"
 					return m, nil
@@ -252,29 +245,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case signalMsg:
-		routed := routedSignal(msg)
-		cmd := waitSignal(m.deps.Signals, m.signals)
-		if routed.action == signalQuit {
+		if msg.sig == nil {
+			return m, nil
+		}
+		switch m.signals.route(msg.sig) {
+		case signalQuit:
 			m.quitting = true
 			return m, tea.Quit
-		}
-		if routed.generation != m.runGeneration {
-			return m, cmd
-		}
-		switch routed.action {
 		case signalInterrupted:
 			m.notice = "interrupting child… (Ctrl-C again to quit)"
 		case signalForced:
 			m.shuttingDown = true
 			m.notice = "stopping child…"
 		}
-		return m, cmd
+		return m, waitSignal(m.deps.Signals)
 
 	case childDoneMsg:
 		res := executor.Result(msg)
 		m.result = &res
 		m.running = false
-		pendingQuit := m.signals.end(m.runGeneration)
+		pendingQuit := m.signals.end()
 		m.control = nil
 		m.notice = ""
 		m.refreshViewport()
@@ -529,7 +519,7 @@ func (m Model) startRun() (tea.Model, tea.Cmd) {
 	m.refreshViewport()
 
 	m.control = executor.NewRunControl()
-	m.runGeneration = m.signals.begin(m.control, m.tool.Output == config.OutputPassthrough)
+	m.signals.begin(m.control, m.tool.Output == config.OutputPassthrough)
 
 	if m.tool.Output == config.OutputPassthrough {
 		runner := m.deps.Runner
@@ -551,12 +541,12 @@ func (m Model) startRun() (tea.Model, tea.Cmd) {
 	return m, tea.Batch(runCmd, tickCmd())
 }
 
-func waitSignal(signals <-chan os.Signal, lifecycle *signalLifecycle) tea.Cmd {
+func waitSignal(signals <-chan os.Signal) tea.Cmd {
 	if signals == nil {
 		return nil
 	}
 	return func() tea.Msg {
-		return signalMsg(lifecycle.route(<-signals))
+		return signalMsg{sig: <-signals}
 	}
 }
 
