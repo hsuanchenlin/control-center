@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -383,11 +384,39 @@ func TestCtrlCInterruptsChildBeforeQuitting(t *testing.T) {
 	if m.quitting || cmd != nil {
 		t.Fatal("first ctrl+c quit the app instead of interrupting the child")
 	}
-	// Second Ctrl-C quits.
+	// Second Ctrl-C requests force-stop but waits for cleanup before quitting.
 	tm, cmd = m.Update(key(tea.KeyCtrlC))
 	m = asModel(t, tm)
-	if !m.quitting || cmd == nil {
-		t.Fatal("second ctrl+c did not quit before child completion")
+	if !m.quitting || cmd != nil {
+		t.Fatal("second ctrl+c did not defer quitting until child completion")
+	}
+	tm, cmd = m.Update(childDoneMsg(executor.Result{Interrupted: true}))
+	m = asModel(t, tm)
+	if cmd == nil || m.running {
+		t.Fatal("child completion did not quit after cleanup")
+	}
+}
+
+func TestPassthroughSignalsWaitForCleanupBeforeQuitting(t *testing.T) {
+	m, _ := newTestModel(t)
+	m.screen = screenOutput
+	m.running = true
+	m.control = executor.NewRunControl()
+
+	tm, cmd := m.Update(signalMsg(os.Interrupt))
+	m = asModel(t, tm)
+	if m.quitting || cmd != nil {
+		t.Fatal("first passthrough signal quit instead of interrupting")
+	}
+	tm, cmd = m.Update(signalMsg(os.Interrupt))
+	m = asModel(t, tm)
+	if !m.quitting || cmd != nil {
+		t.Fatal("second passthrough signal did not defer quit")
+	}
+	tm, cmd = m.Update(childDoneMsg(executor.Result{Interrupted: true}))
+	m = asModel(t, tm)
+	if cmd == nil {
+		t.Fatal("passthrough cleanup completion did not quit")
 	}
 }
 

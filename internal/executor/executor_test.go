@@ -188,6 +188,53 @@ func TestRunCaptureKillsChildThatIgnoresInterrupt(t *testing.T) {
 	}
 }
 
+func TestRunControlForceStopsAndReapsChild(t *testing.T) {
+	r := helperRunner(t)
+	r.KillDelay = 30 * time.Second
+	control := NewRunControl()
+	done := make(chan Result, 1)
+	go func() {
+		done <- r.RunCaptureControlled(control, helperSpec("deaf"), &strings.Builder{}, &strings.Builder{})
+	}()
+	time.Sleep(200 * time.Millisecond)
+	control.Interrupt()
+	control.ForceStop()
+	select {
+	case res := <-done:
+		if !res.Interrupted {
+			t.Fatalf("force-stopped run not interrupted: %+v", res)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("force-stop did not reap child")
+	}
+}
+
+func TestRunControlForceStopRestoresPassthroughTerminal(t *testing.T) {
+	r := helperRunner(t)
+	r.KillDelay = 30 * time.Second
+	r.StdinIsTerminal = func() bool { return true }
+	r.Stdin = strings.NewReader("")
+	r.Stdout = &strings.Builder{}
+	r.Stderr = &strings.Builder{}
+	control := NewRunControl()
+	term := &fakeTerminal{}
+	done := make(chan Result, 1)
+	go func() {
+		done <- r.RunPassthroughControlled(control, helperSpec("deaf"), term)
+	}()
+	time.Sleep(200 * time.Millisecond)
+	control.Interrupt()
+	control.ForceStop()
+	select {
+	case <-done:
+		if len(term.calls) != 2 || term.calls[1] != "restore" {
+			t.Fatalf("terminal not restored after force-stop: %v", term.calls)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("passthrough force-stop did not finish cleanup")
+	}
+}
+
 type fakeTerminal struct {
 	calls      []string
 	restoreErr error

@@ -67,6 +67,49 @@ type Terminal interface {
 	Restore() error
 }
 
+type RunControl struct {
+	ctx    context.Context
+	cancel context.CancelFunc
+	mu     sync.Mutex
+	force  func() error
+	forced bool
+}
+
+func NewRunControl() *RunControl {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &RunControl{ctx: ctx, cancel: cancel}
+}
+
+func (c *RunControl) Interrupt() { c.cancel() }
+
+func (c *RunControl) ForceStop() {
+	c.cancel()
+	c.mu.Lock()
+	c.forced = true
+	force := c.force
+	c.mu.Unlock()
+	if force != nil {
+		_ = force()
+	}
+}
+
+func (c *RunControl) bindForce(force func() error) {
+	c.mu.Lock()
+	c.force = force
+	forced := c.forced
+	c.mu.Unlock()
+	if forced {
+		_ = force()
+	}
+}
+
+func (c *RunControl) release() {
+	c.cancel()
+	c.mu.Lock()
+	c.force = nil
+	c.mu.Unlock()
+}
+
 // defaultKillDelay bounds how long a child may ignore SIGINT after
 // cancellation before os/exec escalates to Kill.
 const defaultKillDelay = 5 * time.Second
@@ -141,6 +184,14 @@ func (r *Runner) Resolve(executable string) (string, error) {
 // KillDelay passes; the run is then reported as Interrupted, never as a
 // success or a start failure, even when the child handles SIGINT and exits 0.
 func (r *Runner) RunCapture(ctx context.Context, spec command.Spec, stdout, stderr io.Writer) Result {
+	control := NewRunControl()
+	stop := context.AfterFunc(ctx, control.Interrupt)
+	defer stop()
+	return r.RunCaptureControlled(control, spec, stdout, stderr)
+}
+
+func (r *Runner) RunCaptureControlled(control *RunControl, spec command.Spec, stdout, stderr io.Writer) Result {
+	defer control.release()
 	start := r.now()
 	path, err := r.Resolve(spec.Executable)
 	if err != nil {
@@ -150,9 +201,9 @@ func (r *Runner) RunCapture(ctx context.Context, spec command.Spec, stdout, stde
 	var wait func() (int, error)
 	var interrupted *atomic.Bool
 	if r.StartProcess != nil {
-		wait, err = r.StartProcess(ctx, path, spec.Args, stdout, stderr)
+		wait, err = r.StartProcess(control.ctx, path, spec.Args, stdout, stderr)
 	} else {
-		wait, interrupted, err = r.startReal(ctx, path, spec.Args, nil, stdout, stderr)
+		wait, interrupted, err = r.startReal(control, path, spec.Args, nil, stdout, stderr)
 	}
 	if err != nil {
 		return Result{Err: fmt.Errorf("start %q: %w", spec.Executable, err)}
@@ -160,7 +211,7 @@ func (r *Runner) RunCapture(ctx context.Context, spec command.Spec, stdout, stde
 	code, werr := wait()
 	res := Result{ExitCode: code, Elapsed: r.now().Sub(start)}
 	switch {
-	case wasInterrupted(ctx, interrupted):
+	case wasInterrupted(control.ctx, interrupted):
 		// An explicit interrupt is never a success, regardless of exit code.
 		res.Interrupted = true
 	case werr != nil && code == 0:
@@ -184,9 +235,9 @@ func wasInterrupted(ctx context.Context, flag *atomic.Bool) bool {
 // startReal starts a real child process. The returned flag reports whether
 // the Cancel closure fired, i.e. the child was interrupted by cancellation;
 // stdin may be nil for capture mode.
-func (r *Runner) startReal(ctx context.Context, path string, args []string, stdin io.Reader, stdout, stderr io.Writer) (func() (int, error), *atomic.Bool, error) {
+func (r *Runner) startReal(control *RunControl, path string, args []string, stdin io.Reader, stdout, stderr io.Writer) (func() (int, error), *atomic.Bool, error) {
 	interrupted := &atomic.Bool{}
-	cmd := exec.CommandContext(ctx, path, args...)
+	cmd := exec.CommandContext(control.ctx, path, args...)
 	// Interrupt first on cancellation; exec kills only after Cancel returns.
 	cmd.Cancel = func() error {
 		interrupted.Store(true)
@@ -202,6 +253,7 @@ func (r *Runner) startReal(ctx context.Context, path string, args []string, stdi
 	if err := cmd.Start(); err != nil {
 		return nil, nil, err
 	}
+	control.bindForce(cmd.Process.Kill)
 	return func() (int, error) {
 		err := cmd.Wait()
 		if err == nil {
@@ -225,6 +277,14 @@ func (r *Runner) startReal(ctx context.Context, path string, args []string, stdi
 // terminal is always restored afterwards. Restoration errors are reported in
 // Result.RestoreErr, never discarded, including when the child also fails.
 func (r *Runner) RunPassthrough(ctx context.Context, spec command.Spec, term Terminal) Result {
+	control := NewRunControl()
+	stop := context.AfterFunc(ctx, control.Interrupt)
+	defer stop()
+	return r.RunPassthroughControlled(control, spec, term)
+}
+
+func (r *Runner) RunPassthroughControlled(control *RunControl, spec command.Spec, term Terminal) Result {
+	defer control.release()
 	if term == nil {
 		return Result{Err: errors.New("passthrough requires a terminal boundary; this tool cannot run without one")}
 	}
@@ -260,9 +320,9 @@ func (r *Runner) RunPassthrough(ctx context.Context, spec command.Spec, term Ter
 	var wait func() (int, error)
 	var interrupted *atomic.Bool
 	if r.StartPassthrough != nil {
-		wait, err = r.StartPassthrough(ctx, path, spec.Args, stdin, stdout, stderr)
+		wait, err = r.StartPassthrough(control.ctx, path, spec.Args, stdin, stdout, stderr)
 	} else {
-		wait, interrupted, err = r.startReal(ctx, path, spec.Args, stdin, stdout, stderr)
+		wait, interrupted, err = r.startReal(control, path, spec.Args, stdin, stdout, stderr)
 	}
 	if err != nil {
 		res := Result{Err: fmt.Errorf("start %q: %w", spec.Executable, err), Elapsed: r.now().Sub(start)}
@@ -273,7 +333,7 @@ func (r *Runner) RunPassthrough(ctx context.Context, spec command.Spec, term Ter
 	restoreErr := restoreError(term.Restore())
 	res := Result{ExitCode: code, Elapsed: r.now().Sub(start), RestoreErr: restoreErr}
 	switch {
-	case wasInterrupted(ctx, interrupted):
+	case wasInterrupted(control.ctx, interrupted):
 		res.Interrupted = true
 	case werr != nil:
 		res.Err = fmt.Errorf("run %q: %w", spec.Executable, werr)

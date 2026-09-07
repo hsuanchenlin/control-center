@@ -3,8 +3,8 @@
 package tui
 
 import (
-	"context"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -39,6 +39,7 @@ type Deps struct {
 	Runner    *executor.Runner
 	Clipboard executor.Clipboard
 	Terminal  executor.Terminal // required only when a tool uses passthrough
+	Signals   <-chan os.Signal
 	// MaxOutputLines bounds the retained child output (default 5000).
 	MaxOutputLines int
 }
@@ -48,6 +49,7 @@ type (
 	outputTickMsg time.Time
 	childDoneMsg  executor.Result
 	copiedMsg     struct{ err error }
+	signalMsg     os.Signal
 )
 
 // Model is the root Bubble Tea model.
@@ -79,7 +81,7 @@ type Model struct {
 	rendered           int // buffer version last drawn into the viewport
 	running            bool
 	interruptRequested bool
-	cancel             context.CancelFunc
+	control            *executor.RunControl
 	result             *executor.Result
 	quitting           bool
 }
@@ -103,7 +105,7 @@ func New(deps Deps) Model {
 
 // Init starts the textinput blinker.
 func (m Model) Init() tea.Cmd {
-	return textinput.Blink
+	return tea.Batch(textinput.Blink, waitSignal(m.deps.Signals))
 }
 
 // Update routes messages by screen.
@@ -123,12 +125,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		// Ctrl-C is global: interrupt a running child first, else quit.
 		if msg.Type == tea.KeyCtrlC {
-			if m.screen == screenOutput && m.running && m.cancel != nil {
+			if m.screen == screenOutput && m.running && m.control != nil {
 				if m.interruptRequested {
 					m.quitting = true
-					return m, tea.Quit
+					m.control.ForceStop()
+					m.notice = "stopping child…"
+					return m, nil
 				}
-				m.cancel()
+				m.control.Interrupt()
 				m.interruptRequested = true
 				m.notice = "interrupting child… (Ctrl-C again to quit)"
 				return m, nil
@@ -137,17 +141,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 
+	case signalMsg:
+		cmd := waitSignal(m.deps.Signals)
+		if os.Signal(msg) == os.Interrupt {
+			updated, interruptCmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+			return updated, tea.Batch(interruptCmd, cmd)
+		}
+		m.quitting = true
+		if m.running && m.control != nil {
+			m.control.ForceStop()
+			return m, cmd
+		}
+		return m, tea.Quit
+
 	case childDoneMsg:
 		res := executor.Result(msg)
 		m.result = &res
 		m.running = false
 		m.interruptRequested = false
-		if m.cancel != nil {
-			m.cancel()
-			m.cancel = nil
-		}
+		m.control = nil
 		m.notice = ""
 		m.refreshViewport()
+		if m.quitting {
+			return m, tea.Quit
+		}
 		return m, nil
 
 	case outputTickMsg:
@@ -390,8 +407,7 @@ func (m Model) startRun() (tea.Model, tea.Cmd) {
 	m.viewport = viewport.New(m.width, max(1, m.height-6))
 	m.refreshViewport()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	m.cancel = cancel
+	m.control = executor.NewRunControl()
 
 	if m.tool.Output == config.OutputPassthrough {
 		runner := m.deps.Runner
@@ -400,7 +416,7 @@ func (m Model) startRun() (tea.Model, tea.Cmd) {
 		// Errors, interruption, and restore failures all travel in the
 		// Result so nothing (including RestoreErr) is dropped.
 		return m, func() tea.Msg {
-			return childDoneMsg(runner.RunPassthrough(ctx, spec, term))
+			return childDoneMsg(runner.RunPassthroughControlled(m.control, spec, term))
 		}
 	}
 
@@ -408,9 +424,16 @@ func (m Model) startRun() (tea.Model, tea.Cmd) {
 	spec := m.spec
 	buf := m.buffer
 	runCmd := func() tea.Msg {
-		return childDoneMsg(runner.RunCapture(ctx, spec, buf, buf))
+		return childDoneMsg(runner.RunCaptureControlled(m.control, spec, buf, buf))
 	}
 	return m, tea.Batch(runCmd, tickCmd())
+}
+
+func waitSignal(signals <-chan os.Signal) tea.Cmd {
+	if signals == nil {
+		return nil
+	}
+	return func() tea.Msg { return signalMsg(<-signals) }
 }
 
 func (m Model) updateOutput(msg tea.Msg) (tea.Model, tea.Cmd) {
