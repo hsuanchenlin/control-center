@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go:
+    name: Go checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Install Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.3'
+          cache: false
+
+      - name: Detect Go module
+        id: module
+        run: |
+          if [ -f go.mod ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Report bootstrap state
+        if: steps.module.outputs.present != 'true'
+        run: |
+          echo "No go.mod found in this repository yet."
+          echo "The formatting, vet, and test checks in this job activate automatically"
+          echo "as soon as the Go module lands. Nothing is skipped on branches that"
+          echo "do contain go.mod."
+
+      - name: Check formatting (gofmt)
+        if: steps.module.outputs.present == 'true'
+        run: |
+          unformatted=$(gofmt -l $(git ls-files '*.go'))
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt-formatted:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        if: steps.module.outputs.present == 'true'
+        run: go vet ./...
+
+      - name: go test
+        if: steps.module.outputs.present == 'true'
+        run: go test -race ./...
