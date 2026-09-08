@@ -5,37 +5,167 @@
 # `--help` for the exact current syntax before relying on them.
 #
 # Schema summary (see README.md for the full reference):
-#   [[tool]]            id, name, description, executable, output ("capture"|"passthrough")
-#   [[tool.action]]     name, description, args (fixed argv prefix)
+#   [[tool]]            id, name, description, group (optional category),
+#                       executable, output ("capture"|"passthrough")
+#   [[tool.action]]     name, description, args (fixed argv prefix),
+#                       output (optional per-action override)
 #   [[tool.action.param]]  key, label, type (text|select|toggle|number|path),
 #                          required, default, choices, min/max, must_exist,
 #                          and exactly one of: flag = "--flag"  or  positional = <index>
 
+# ===========================================================================
+# System - package management and shell history.
+# ===========================================================================
+
 # ---------------------------------------------------------------------------
-# EchoForge - media pipeline CLI.
+# Homebrew - macOS package manager.
+# ---------------------------------------------------------------------------
+[[tool]]
+id = "brew"
+name = "Homebrew"
+description = "install and maintain macOS packages"
+group = "System"
+executable = "brew"
+
+[[tool.action]]
+name = "update"
+description = "Refresh Homebrew's package index (read-only)"
+args = ["update"]
+
+[[tool.action]]
+name = "upgrade"
+description = "Upgrade installed formulae and casks (state-changing)"
+args = ["upgrade"]
+
+[[tool.action.param]]
+key = "dry-run"
+label = "Dry run"
+description = "Show what would be upgraded without changing anything"
+type = "toggle"
+flag = "--dry-run"
+
+[[tool.action]]
+name = "outdated"
+description = "Show outdated formulae and casks (read-only)"
+args = ["outdated"]
+
+[[tool.action]]
+name = "list"
+description = "List installed formulae and casks (read-only)"
+args = ["list"]
+
+[[tool.action]]
+name = "search"
+description = "Search formulae and casks by name or keyword (read-only)"
+args = ["search"]
+
+[[tool.action.param]]
+key = "query"
+label = "Search query"
+description = "Name or keyword to search for"
+type = "text"
+required = true
+positional = 0
+
+[[tool.action]]
+name = "cleanup"
+description = "Remove stale downloads and old versions (state-changing)"
+args = ["cleanup"]
+
+[[tool.action.param]]
+key = "dry-run"
+label = "Dry run"
+description = "Show what would be removed without deleting anything"
+type = "toggle"
+flag = "-n"
+
+# ---------------------------------------------------------------------------
+# Atuin - shell history search and sync client.
+# ---------------------------------------------------------------------------
+[[tool]]
+id = "atuin"
+name = "Atuin"
+description = "search and inspect shell command history"
+group = "System"
+executable = "atuin"
+
+[[tool.action]]
+name = "search"
+description = "Interactive fuzzy search over shell history (takes over the terminal)"
+args = ["search", "-i"]
+output = "passthrough"   # ADAPT: atuin's TUI needs the raw terminal
+
+[[tool.action]]
+name = "stats"
+description = "Show history statistics (read-only)"
+args = ["stats"]
+
+[[tool.action]]
+name = "history"
+description = "List recent history entries (read-only)"
+args = ["history", "list"]
+
+[[tool.action.param]]
+key = "limit"
+label = "Max entries"
+description = "How many history entries to show; empty means the tool default"
+type = "number"
+required = false
+min = 1
+max = 1000
+flag = "--limit"         # ADAPT: confirm via `atuin history list --help`
+
+# ===========================================================================
+# Research - literature and reference tools.
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# zotero-pdfs (zpdf) - browse and open Zotero library PDFs.
+# ---------------------------------------------------------------------------
+[[tool]]
+id = "zotero-pdfs"
+name = "Zotero PDFs"
+description = "browse and open papers from the Zotero library"
+group = "Research"
+executable = "zpdf"
+
+[[tool.action]]
+name = "search"
+description = "Interactively browse the Zotero library and open a PDF"
+output = "passthrough"   # ADAPT: interactive picker needs the raw terminal
+
+# ===========================================================================
+# Personal - the captain's own tools.
+#
 # Destructive or state-changing actions (update install, settings changes)
-# say so in their descriptions; EchoForge's own confirmations still apply -
+# say so in their descriptions; each tool's own confirmations still apply -
 # control-center never bypasses them.
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# EchoForge - dictation app and media pipeline CLI.
 # ---------------------------------------------------------------------------
 [[tool]]
 id = "echoforge"
 name = "EchoForge"
-description = "media pipeline CLI"
+description = "dictation app and media pipeline CLI"
+group = "Personal"
 executable = "echoforge"
 
 [[tool.action]]
 name = "start"
-description = "Start the EchoForge pipeline"
+description = "Start the dictation pipeline"
 args = ["start"]
 
 [[tool.action]]
 name = "status"
-description = "Show pipeline status"
+description = "Show pipeline and engine status"
 args = ["status"]
 
 [[tool.action.param]]
 key = "verbose"
 label = "Verbose output"
+description = "Show detailed engine diagnostics"
 type = "toggle"
 flag = "--verbose"          # ADAPT: confirm flag name via `echoforge status --help`
 
@@ -46,7 +176,7 @@ args = ["version"]
 
 [[tool.action]]
 name = "history"
-description = "Show recent processing history"
+description = "Show recent dictation history"
 args = ["history"]
 
 [[tool.action.param]]
@@ -62,12 +192,13 @@ flag = "--limit"            # ADAPT: confirm flag name via `echoforge history --
 
 [[tool.action]]
 name = "logs"
-description = "Tail EchoForge logs"
+description = "Tail the unified EchoForge logs"
 args = ["logs"]
 
 [[tool.action.param]]
 key = "level"
 label = "Log level"
+description = "Minimum severity to show"
 type = "select"
 required = false
 choices = ["debug", "info", "warn", "error"]
@@ -77,19 +208,20 @@ flag = "--level"            # ADAPT: confirm flag name via `echoforge logs --hel
 [[tool.action.param]]
 key = "follow"
 label = "Follow log output"
+description = "Keep streaming new log lines"
 type = "toggle"
 flag = "--follow"           # ADAPT
 
 [[tool.action]]
 name = "settings"
-description = "Open EchoForge settings (may modify configuration; EchoForge confirms changes itself)"
+description = "View configuration (may modify settings; EchoForge confirms changes itself)"
 args = ["settings"]
 # ADAPT: if `echoforge settings` is interactive, set output = "passthrough"
 # on this tool or split interactive actions into a second tool entry.
 
 [[tool.action]]
 name = "update-check"
-description = "Check for EchoForge updates (read-only)"
+description = "Check for new EchoForge releases (read-only)"
 args = ["update", "--check"]   # ADAPT: confirm subcommand syntax
 
 [[tool.action]]
@@ -98,32 +230,35 @@ description = "Install EchoForge updates - state-changing; EchoForge prompts for
 args = ["update", "--install"] # ADAPT: confirm subcommand syntax
 
 # ---------------------------------------------------------------------------
-# market-monitor - representative market/report choices.
+# market-monitor - US/TW market reports and quotes.
 # ADAPT: verify markets/reports against `market-monitor --help`.
 # ---------------------------------------------------------------------------
 [[tool]]
 id = "market-monitor"
 name = "Market Monitor"
-description = "daily market reports"
+description = "US/TW market reports and quotes"
+group = "Personal"
 executable = "market-monitor"
 
 [[tool.action]]
 name = "report"
-description = "Generate a market report"
+description = "Generate a US/TW market report"
 args = ["report"]
 
 [[tool.action.param]]
 key = "market"
 label = "Market"
+description = "Which markets to include in the report"
 type = "select"
 required = true
-choices = ["us", "eu", "asia"]   # ADAPT: use the market ids the tool documents
-default = "us"
+choices = ["both", "us", "tw"]   # ADAPT: use the market ids the tool documents
+default = "both"
 flag = "--market"
 
 [[tool.action.param]]
 key = "format"
 label = "Report format"
+description = "text for reading in the terminal, json for scripting"
 type = "select"
 required = false
 choices = ["text", "json"]
@@ -144,27 +279,29 @@ required = true
 positional = 0
 
 # ---------------------------------------------------------------------------
-# sports-scores-cli - representative sport/date choices.
+# sports-scores-cli - today's scores by sport.
 # ADAPT: verify sports and date flag against `sports-scores-cli --help`.
 # ---------------------------------------------------------------------------
 [[tool]]
 id = "sports-scores"
 name = "Sports Scores"
-description = "game scores by sport and date"
+description = "today's game scores by sport"
+group = "Personal"
 executable = "sports-scores-cli"
 
 [[tool.action]]
 name = "scores"
-description = "Show scores for a sport"
+description = "Show today's scores for a sport"
 args = ["scores"]
 
 [[tool.action.param]]
 key = "sport"
 label = "Sport"
+description = "Which league's scores to show"
 type = "select"
 required = true
-choices = ["nfl", "nba", "mlb", "nhl", "soccer"]  # ADAPT
-default = "nfl"
+choices = ["baseball", "nfl", "nba", "soccer"]  # ADAPT
+default = "baseball"
 positional = 0
 
 [[tool.action.param]]
@@ -174,3 +311,31 @@ description = "YYYY-MM-DD; empty means today"
 type = "text"
 required = false
 flag = "--date"                # ADAPT
+
+# ===========================================================================
+# Daily - morning workflow.
+# ===========================================================================
+
+[[tool]]
+id = "daily-agenda"
+name = "Daily Agenda"
+description = "review today's schedule and tasks"
+group = "Daily"
+executable = "daily-agenda"
+
+[[tool.action]]
+name = "show"
+description = "Show today's calendar events and due tasks"
+args = ["show"]              # ADAPT: confirm subcommand via `daily-agenda --help`
+
+[[tool]]
+id = "daily-catchup"
+name = "Daily Catchup"
+description = "quick morning overview of mail, news, and reminders"
+group = "Daily"
+executable = "daily-catchup"
+
+[[tool.action]]
+name = "run"
+description = "Print the morning catchup summary"
+args = ["run"]               # ADAPT: confirm subcommand via `daily-catchup --help`

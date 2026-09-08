@@ -23,6 +23,7 @@ const modelManifest = `
 id = "multi"
 name = "Multi Tool"
 description = "two actions"
+group = "System"
 executable = "multi-cli"
 
 [[tool.action]]
@@ -58,6 +59,7 @@ flag = "--dest"
 id = "solo"
 name = "Solo Tool"
 description = "one action with params"
+group = "Personal"
 executable = "solo-cli"
 
 [[tool.action]]
@@ -857,5 +859,251 @@ func TestFormStateKeyDoesNotCollideOnSlashes(t *testing.T) {
 	second := Model{tool: config.Tool{ID: "a"}, action: config.Action{Name: "b/c"}}
 	if first.formKey() == second.formKey() {
 		t.Fatal("distinct tool/action pairs produced the same form-state key")
+	}
+}
+
+func TestPaletteRendersGroupTags(t *testing.T) {
+	m, _ := newTestModel(t)
+	view := m.View()
+	if !strings.Contains(view, "[System]") || !strings.Contains(view, "[Personal]") {
+		t.Fatalf("group tags not rendered:\n%s", view)
+	}
+	// Ungrouped tools render without a tag.
+	if !strings.Contains(view, "  Plain Tool - one action, no params") {
+		t.Fatalf("ungrouped tool misaligned:\n%s", view)
+	}
+}
+
+func TestPaletteGroupSearch(t *testing.T) {
+	m, _ := newTestModel(t)
+	tm, _ := m.Update(runes("sys"))
+	m = asModel(t, tm)
+	if len(m.matches) != 1 || m.matches[0].ID != "multi" {
+		t.Fatalf("group search matches = %v", m.matches)
+	}
+}
+
+func TestPaletteCtrlJKNavigation(t *testing.T) {
+	m, _ := newTestModel(t)
+	tm, _ := m.Update(key(tea.KeyCtrlJ))
+	m = asModel(t, tm)
+	if m.palCursor != 1 {
+		t.Fatalf("ctrl+j cursor = %d", m.palCursor)
+	}
+	tm, _ = m.Update(key(tea.KeyCtrlK))
+	m = asModel(t, tm)
+	if m.palCursor != 0 {
+		t.Fatalf("ctrl+k cursor = %d", m.palCursor)
+	}
+	// Cursor clamps at the top.
+	tm, _ = m.Update(key(tea.KeyCtrlK))
+	m = asModel(t, tm)
+	if m.palCursor != 0 {
+		t.Fatalf("cursor escaped top: %d", m.palCursor)
+	}
+}
+
+func TestActionVimNavigation(t *testing.T) {
+	m, _ := newTestModel(t)
+	tm, _ := m.Update(key(tea.KeyEnter)) // multi -> action picker
+	m = asModel(t, tm)
+	if m.screen != screenAction {
+		t.Fatalf("screen = %v", m.screen)
+	}
+	tm, _ = m.Update(runes("j"))
+	m = asModel(t, tm)
+	tm, _ = m.Update(runes("j"))
+	m = asModel(t, tm)
+	if m.actCursor != 2 {
+		t.Fatalf("j j cursor = %d", m.actCursor)
+	}
+	tm, _ = m.Update(runes("k"))
+	m = asModel(t, tm)
+	if m.actCursor != 1 {
+		t.Fatalf("k cursor = %d", m.actCursor)
+	}
+	// h backs out to the palette without selecting.
+	tm, _ = m.Update(runes("h"))
+	m = asModel(t, tm)
+	if m.screen != screenPalette {
+		t.Fatalf("h screen = %v", m.screen)
+	}
+	// l selects like Enter.
+	tm, _ = m.Update(key(tea.KeyEnter))
+	m = asModel(t, tm)
+	tm, _ = m.Update(runes("l"))
+	m = asModel(t, tm)
+	if m.action.Name != "go" || m.screen != screenForm {
+		t.Fatalf("l selected %q on screen %v", m.action.Name, m.screen)
+	}
+}
+
+func TestActionLeftBack(t *testing.T) {
+	m, _ := newTestModel(t)
+	tm, _ := m.Update(key(tea.KeyEnter)) // multi -> action picker
+	m = asModel(t, tm)
+	tm, _ = m.Update(key(tea.KeyLeft))
+	m = asModel(t, tm)
+	if m.screen != screenPalette {
+		t.Fatalf("left screen = %v", m.screen)
+	}
+}
+
+func TestConfirmLeftAndHBackToForm(t *testing.T) {
+	m, _ := newTestModel(t)
+	tm, _ := m.Update(runes("solo"))
+	m = asModel(t, tm)
+	tm, _ = m.Update(key(tea.KeyEnter)) // form
+	m = asModel(t, tm)
+	tm, _ = m.enterConfirm(m.form.Snapshot())
+	m = asModel(t, tm)
+	if m.screen != screenConfirm {
+		t.Fatalf("screen = %v", m.screen)
+	}
+	tm, _ = m.Update(key(tea.KeyLeft))
+	m = asModel(t, tm)
+	if m.screen != screenForm {
+		t.Fatalf("left from confirm = %v, want form", m.screen)
+	}
+	tm, _ = m.enterConfirm(m.form.Snapshot())
+	m = asModel(t, tm)
+	tm, _ = m.Update(runes("h"))
+	m = asModel(t, tm)
+	if m.screen != screenForm {
+		t.Fatalf("h from confirm = %v, want form", m.screen)
+	}
+}
+
+func TestConfirmLeftBackWithoutParams(t *testing.T) {
+	// plain is a single action with no params: confirm backs straight to the
+	// palette.
+	m, _ := newTestModel(t)
+	tm, _ := m.Update(runes("plain"))
+	m = asModel(t, tm)
+	tm, _ = m.Update(key(tea.KeyEnter))
+	m = asModel(t, tm)
+	if m.screen != screenConfirm {
+		t.Fatalf("screen = %v", m.screen)
+	}
+	tm, _ = m.Update(key(tea.KeyLeft))
+	m = asModel(t, tm)
+	if m.screen != screenPalette {
+		t.Fatalf("left screen = %v", m.screen)
+	}
+}
+
+func TestConfirmLeftBackToActionPicker(t *testing.T) {
+	// multi's "bare" action has no params: confirm backs to the action picker.
+	m, _ := newTestModel(t)
+	tm, _ := m.Update(key(tea.KeyEnter)) // multi -> action picker
+	m = asModel(t, tm)
+	tm, _ = m.Update(runes("j")) // "bare"
+	m = asModel(t, tm)
+	tm, _ = m.Update(key(tea.KeyEnter)) // straight to confirm
+	m = asModel(t, tm)
+	if m.screen != screenConfirm || m.action.Name != "bare" {
+		t.Fatalf("screen=%v action=%q", m.screen, m.action.Name)
+	}
+	tm, _ = m.Update(key(tea.KeyLeft))
+	m = asModel(t, tm)
+	if m.screen != screenAction {
+		t.Fatalf("left screen = %v, want action picker", m.screen)
+	}
+}
+
+func TestConfirmLRuns(t *testing.T) {
+	m, _ := newTestModel(t)
+	tm, _ := m.Update(runes("plain"))
+	m = asModel(t, tm)
+	tm, _ = m.Update(key(tea.KeyEnter)) // confirm
+	m = asModel(t, tm)
+	tm, cmd := m.Update(runes("l"))
+	m = asModel(t, tm)
+	if m.screen != screenOutput || !m.running || cmd == nil {
+		t.Fatalf("l did not run: screen=%v running=%v", m.screen, m.running)
+	}
+}
+
+func TestOutputLeftAndHBackWhenFinished(t *testing.T) {
+	m, _ := newTestModel(t)
+	tm, _ := m.Update(runes("plain"))
+	m = asModel(t, tm)
+	tm, _ = m.Update(key(tea.KeyEnter))
+	m = asModel(t, tm)
+	tm, _ = m.Update(key(tea.KeyEnter)) // run
+	m = asModel(t, tm)
+	tm, _ = m.Update(childDoneMsg(executor.Result{ExitCode: 0}))
+	m = asModel(t, tm)
+	for _, k := range []tea.KeyMsg{key(tea.KeyLeft), runes("h"), key(tea.KeyEsc), runes("q")} {
+		m.screen = screenOutput
+		tm, _ = m.Update(k)
+		m = asModel(t, tm)
+		if m.screen != screenPalette {
+			t.Fatalf("%v did not return to palette: %v", k, m.screen)
+		}
+	}
+}
+
+func TestOutputBackKeysBlockedWhileRunning(t *testing.T) {
+	m, _ := newTestModel(t)
+	m.screen = screenOutput
+	m.running = true
+	m.control = executor.NewRunControl()
+	for _, k := range []tea.KeyMsg{key(tea.KeyLeft), runes("h"), runes("q"), key(tea.KeyEsc)} {
+		tm, _ := m.Update(k)
+		m = asModel(t, tm)
+		if m.screen != screenOutput {
+			t.Fatalf("%v left the output screen while the child runs", k)
+		}
+	}
+}
+
+func TestOutputVimScrollKeys(t *testing.T) {
+	m, _ := newTestModel(t)
+	m.screen = screenOutput
+	m.running = false
+	m.rendered = -1
+	m.buffer = executor.NewLineBuffer(100)
+	m.viewport = viewport.New(40, 4)
+	m.buffer.Write([]byte(strings.Repeat("some output line\n", 30)))
+	m.refreshViewport()
+
+	step := func(k tea.KeyMsg) {
+		t.Helper()
+		tm, _ := m.Update(k)
+		m = asModel(t, tm)
+	}
+
+	step(runes("j"))
+	if m.viewport.YOffset != 1 {
+		t.Fatalf("j offset = %d, want 1", m.viewport.YOffset)
+	}
+	step(runes("k"))
+	if m.viewport.YOffset != 0 {
+		t.Fatalf("k offset = %d, want 0", m.viewport.YOffset)
+	}
+	step(runes("d"))
+	if m.viewport.YOffset != 2 {
+		t.Fatalf("d offset = %d, want a half page (2)", m.viewport.YOffset)
+	}
+	step(key(tea.KeyCtrlD))
+	if m.viewport.YOffset != 4 {
+		t.Fatalf("ctrl+d offset = %d, want 4", m.viewport.YOffset)
+	}
+	step(runes("u"))
+	if m.viewport.YOffset != 2 {
+		t.Fatalf("u offset = %d, want 2", m.viewport.YOffset)
+	}
+	step(key(tea.KeyCtrlU))
+	if m.viewport.YOffset != 0 {
+		t.Fatalf("ctrl+u offset = %d, want 0", m.viewport.YOffset)
+	}
+	step(runes("G"))
+	if !m.viewport.AtBottom() {
+		t.Fatal("G did not jump to the bottom")
+	}
+	step(runes("g"))
+	if m.viewport.YOffset != 0 {
+		t.Fatalf("g offset = %d, want top", m.viewport.YOffset)
 	}
 }

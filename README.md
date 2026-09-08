@@ -51,6 +51,8 @@ auto-discovers tools. Run `control-center validate` after editing.
 id = "my-tool"              # required, stable, unique
 name = "My Tool"            # required, display name
 description = "what it does"
+group = "System"            # optional category label, shown in the palette
+                            # and matched by fuzzy search (single line, trimmed)
 executable = "my-cli"       # required; bare command name resolved via PATH
 output = "capture"          # optional: "capture" (default) or "passthrough"
 
@@ -58,6 +60,7 @@ output = "capture"          # optional: "capture" (default) or "passthrough"
 name = "run"                # required, unique within the tool
 description = "run it"
 args = ["run", "--fast"]    # fixed argv prefix, literal (no templating)
+output = "passthrough"      # optional per-action override of the tool's mode
 
 [[tool.action.param]]
 key = "target"              # required, stable, unique within the action
@@ -78,6 +81,9 @@ Rules enforced by `validate`:
 
 - Duplicate tool ids, action names, param keys, and positional indices are
   rejected.
+- `group` is optional; when set it must be a single trimmed line with no
+  control characters.
+- An action's `output` overrides the tool's `output` for that action only.
 - Every param sets exactly one of `flag` or `positional`.
 - Flags must be single tokens starting with `-` (no spaces, no `=`); values
   are always passed as a **separate argv element**. How a child parses a
@@ -109,11 +115,11 @@ control-center, and manifests are plain text.
 
 | Screen      | Keys                                                                 |
 |-------------|----------------------------------------------------------------------|
-| Palette     | Type to filter · ↑/↓ or Ctrl-P/Ctrl-N move · Enter select · Esc clear filter · Ctrl-C exit. The filter always has focus, so every printable key (including `q`) is literal input. |
-| Action      | ↑/↓ or Ctrl-P/Ctrl-N move · Enter select · Esc back · Ctrl-C exit    |
+| Palette     | Type to filter (matches name, description, and group) · ↑/↓ or Ctrl-P/Ctrl-N/Ctrl-K/Ctrl-J move · Enter select · Esc clear filter · Ctrl-C exit. The filter always has focus, so every printable key (including `q`) is literal input. |
+| Action      | `j`/`k` or ↑/↓ (Ctrl-N/Ctrl-P, Ctrl-J/Ctrl-K) move · `l`/Enter select · `h`/←/Esc back · Ctrl-C exit |
 | Form        | Type to edit · Tab/Shift-Tab move fields · Enter submit · Esc back (edits preserved) · Ctrl-C exit |
-| Confirm     | Enter run · `e` copy the command to the clipboard without running · Esc back · Ctrl-C exit |
-| Output      | Capture: ↑/↓ (PgUp/PgDn) scroll · Ctrl-C interrupt the child · Ctrl-C again force-stop and exit after cleanup · `q`/Esc back once finished. Passthrough: Ctrl-C belongs to the child; control-center resumes after it exits. |
+| Confirm     | `l`/Enter run · `e` copy the command to the clipboard without running · `h`/←/Esc back · Ctrl-C exit |
+| Output      | Capture: `j`/`k` or ↑/↓ (PgUp/PgDn) scroll · `d`/Ctrl-D and `u`/Ctrl-U half page · `g`/`G` top/bottom · Ctrl-C interrupt the child · Ctrl-C again force-stop and exit after cleanup · `q`/`h`/←/Esc back once finished. Passthrough: Ctrl-C belongs to the child; control-center resumes after it exits. |
 
 Single-letter shortcuts never fire while a text field is focused.
 
@@ -173,8 +179,9 @@ Single-letter shortcuts never fire while a text field is focused.
 - **Terminal looks broken after a passthrough command** - control-center
   always restores the terminal after passthrough children; if a child
   crashed hard, run `reset` or `stty sane`, then report a bug.
-- **A tool needs interactive stdin** - set `output = "passthrough"` on that
-  tool so the child inherits the terminal.
+- **An action needs interactive stdin** - set `output = "passthrough"` on that
+  action so the child inherits the terminal. Set it on the tool instead when
+  every action needs passthrough mode.
 
 ## Development
 

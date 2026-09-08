@@ -229,7 +229,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Ctrl-C is global: interrupt a running child first, else quit.
 		if msg.Type == tea.KeyCtrlC {
 			if m.screen == screenOutput && m.running && m.control != nil {
-				if m.tool.Output == config.OutputPassthrough {
+				if m.tool.OutputFor(m.action) == config.OutputPassthrough {
 					return m, nil
 				}
 				if m.signals.route(os.Interrupt) == signalForced {
@@ -379,21 +379,21 @@ func (m Model) updateAction(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	switch {
-	case key.Type == tea.KeyEnter:
+	case key.Type == tea.KeyEnter || isRunes(key, "l"):
 		if len(m.tool.Actions) == 0 {
 			return m, nil
 		}
 		m.action = m.tool.Actions[m.actCursor]
 		return m.enterForm()
-	case isUp(key):
+	case isUp(key) || isRunes(key, "k"):
 		if m.actCursor > 0 {
 			m.actCursor--
 		}
-	case isDown(key):
+	case isDown(key) || isRunes(key, "j"):
 		if m.actCursor < len(m.tool.Actions)-1 {
 			m.actCursor++
 		}
-	case key.Type == tea.KeyEsc:
+	case key.Type == tea.KeyEsc || key.Type == tea.KeyLeft || isRunes(key, "h"):
 		m.screen = screenPalette
 	}
 	return m, nil
@@ -474,9 +474,9 @@ func (m Model) updateConfirm(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	switch {
-	case key.Type == tea.KeyEnter:
+	case key.Type == tea.KeyEnter || isRunes(key, "l"):
 		return m.startRun()
-	case key.Type == tea.KeyRunes && string(key.Runes) == "e":
+	case isRunes(key, "e"):
 		clip := m.deps.Clipboard
 		if clip == nil {
 			m.notice = "clipboard unavailable"
@@ -486,7 +486,7 @@ func (m Model) updateConfirm(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, func() tea.Msg {
 			return copiedMsg{err: clip.WriteString(display)}
 		}
-	case key.Type == tea.KeyEsc:
+	case key.Type == tea.KeyEsc || key.Type == tea.KeyLeft || isRunes(key, "h"):
 		if len(m.action.Params) == 0 {
 			m.screen = screenAction
 			if len(m.tool.Actions) == 1 {
@@ -519,9 +519,10 @@ func (m Model) startRun() (tea.Model, tea.Cmd) {
 	m.refreshViewport()
 
 	m.control = executor.NewRunControl()
-	m.signals.begin(m.control, m.tool.Output == config.OutputPassthrough)
+	passthrough := m.tool.OutputFor(m.action) == config.OutputPassthrough
+	m.signals.begin(m.control, passthrough)
 
-	if m.tool.Output == config.OutputPassthrough {
+	if passthrough {
 		runner := m.deps.Runner
 		term := m.deps.Terminal
 		spec := m.spec
@@ -559,8 +560,7 @@ func (m Model) updateOutput(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if !ok {
 		return m, nil
 	}
-	switch {
-	case key.Type == tea.KeyEsc, key.Type == tea.KeyRunes && string(key.Runes) == "q":
+	if key.Type == tea.KeyEsc || key.Type == tea.KeyLeft || isRunes(key, "q") || isRunes(key, "h") {
 		if m.running {
 			// Never steal keys from a running child's stream; only Ctrl-C
 			// interrupts.
@@ -569,6 +569,26 @@ func (m Model) updateOutput(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.screen = screenPalette
 		m.result = nil
 		m.notice = ""
+		return m, nil
+	}
+	switch {
+	case isRunes(key, "j"):
+		m.viewport.LineDown(1)
+		return m, nil
+	case isRunes(key, "k"):
+		m.viewport.LineUp(1)
+		return m, nil
+	case isRunes(key, "d") || key.Type == tea.KeyCtrlD:
+		m.viewport.HalfViewDown()
+		return m, nil
+	case isRunes(key, "u") || key.Type == tea.KeyCtrlU:
+		m.viewport.HalfViewUp()
+		return m, nil
+	case isRunes(key, "g"):
+		m.viewport.GotoTop()
+		return m, nil
+	case isRunes(key, "G"):
+		m.viewport.GotoBottom()
 		return m, nil
 	}
 	var cmd tea.Cmd
@@ -607,9 +627,14 @@ func tickCmd() tea.Cmd {
 }
 
 func isUp(k tea.KeyMsg) bool {
-	return k.Type == tea.KeyUp || k.Type == tea.KeyCtrlP
+	return k.Type == tea.KeyUp || k.Type == tea.KeyCtrlP || k.Type == tea.KeyCtrlK
 }
 
 func isDown(k tea.KeyMsg) bool {
-	return k.Type == tea.KeyDown || k.Type == tea.KeyCtrlN
+	return k.Type == tea.KeyDown || k.Type == tea.KeyCtrlN || k.Type == tea.KeyCtrlJ
+}
+
+// isRunes matches a literal rune key such as "j" or "G".
+func isRunes(k tea.KeyMsg, s string) bool {
+	return k.Type == tea.KeyRunes && string(k.Runes) == s
 }
