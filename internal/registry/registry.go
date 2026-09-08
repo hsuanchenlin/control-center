@@ -43,9 +43,9 @@ func (r *Registry) Tool(id string) (config.Tool, bool) {
 	return cloneTool(r.tools[i]), true
 }
 
-// Match ranks tools against a fuzzy query over id, name, and description.
-// An empty query returns all tools in manifest order. Results are ordered by
-// descending score, ties broken by manifest order.
+// Match ranks tools against a fuzzy query over id, name, description, and
+// group. An empty query returns all tools in manifest order. Results are
+// ordered by descending score, ties broken by manifest order.
 func (r *Registry) Match(query string) []config.Tool {
 	query = strings.ToLower(strings.TrimSpace(query))
 	if query == "" {
@@ -58,7 +58,7 @@ func (r *Registry) Match(query string) []config.Tool {
 	var hits []scored
 	for i, t := range r.tools {
 		best := -1
-		for _, field := range []string{t.ID, t.Name, t.Description} {
+		for _, field := range []string{t.ID, t.Name, t.Description, t.Group} {
 			if s, ok := fuzzyScore(query, strings.ToLower(field)); ok && s > best {
 				best = s
 			}

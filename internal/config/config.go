@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/BurntSushi/toml"
 )
@@ -44,12 +45,15 @@ type Config struct {
 
 // Tool is a registered command-line tool.
 type Tool struct {
-	ID          string     `toml:"id"`
-	Name        string     `toml:"name"`
-	Description string     `toml:"description"`
-	Executable  string     `toml:"executable"`
-	Output      OutputMode `toml:"output"`
-	Actions     []Action   `toml:"action"`
+	ID          string `toml:"id"`
+	Name        string `toml:"name"`
+	Description string `toml:"description"`
+	// Group is an optional category label (e.g. "System", "Research") shown in
+	// the palette and searched by fuzzy matching.
+	Group      string     `toml:"group"`
+	Executable string     `toml:"executable"`
+	Output     OutputMode `toml:"output"`
+	Actions    []Action   `toml:"action"`
 }
 
 // Action is one invocable operation of a tool.
@@ -58,8 +62,24 @@ type Action struct {
 	Description string `toml:"description"`
 	// Args is the fixed argv prefix for the action (e.g. ["start"]). Values
 	// are literal; no templating is performed.
-	Args   []string `toml:"args"`
-	Params []Param  `toml:"param"`
+	Args []string `toml:"args"`
+	// Output optionally overrides the tool's output mode for this action
+	// (e.g. one interactive action on an otherwise captured tool).
+	Output OutputMode `toml:"output"`
+	Params []Param    `toml:"param"`
+}
+
+// OutputFor returns the action's effective output mode: the action's own
+// override when set, otherwise the tool's mode (which Validate has already
+// defaulted to capture).
+func (t Tool) OutputFor(a Action) OutputMode {
+	if a.Output != "" {
+		return a.Output
+	}
+	if t.Output != "" {
+		return t.Output
+	}
+	return OutputCapture
 }
 
 // Param is a typed parameter of an action.
@@ -156,6 +176,14 @@ func (c *Config) Validate(source string) error {
 		if t.Name == "" {
 			return fmt.Errorf("%s: name is required", where)
 		}
+		if t.Group != "" {
+			if strings.TrimSpace(t.Group) != t.Group {
+				return fmt.Errorf("%s: group %q must not have leading or trailing whitespace", where, t.Group)
+			}
+			if strings.IndexFunc(t.Group, unicode.IsControl) >= 0 {
+				return fmt.Errorf("%s: group %q must be a single line without control characters", where, t.Group)
+			}
+		}
 		if strings.TrimSpace(t.Executable) == "" {
 			return fmt.Errorf("%s: executable is required and must not be empty", where)
 		}
@@ -183,6 +211,11 @@ func (c *Config) Validate(source string) error {
 				return fmt.Errorf("%s: duplicate action name %q", awhere, a.Name)
 			}
 			seenActions[a.Name] = true
+			switch a.Output {
+			case "", OutputCapture, OutputPassthrough:
+			default:
+				return fmt.Errorf("%s: unknown output mode %q (want %q or %q)", awhere, a.Output, OutputCapture, OutputPassthrough)
+			}
 			for i, arg := range a.Args {
 				if arg == "" {
 					return fmt.Errorf("%s: args[%d] must not be empty", awhere, i)

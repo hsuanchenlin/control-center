@@ -147,6 +147,11 @@ func TestValidationErrors(t *testing.T) {
 		{"text with choices", manifestWithParam("key='p'\nlabel='P'\ntype='text'\nflag='--p'\nchoices=['a']"), "only to select"},
 		{"text with min", manifestWithParam("key='p'\nlabel='P'\ntype='text'\nflag='--p'\nmin=1"), "only to number"},
 		{"text must_exist", manifestWithParam("key='p'\nlabel='P'\ntype='text'\nflag='--p'\nmust_exist=true"), "only to path"},
+		{"group leading space", "[[tool]]\nid='a'\nname='A'\nexecutable='x'\ngroup=' System'\n[[tool.action]]\nname='r'\n", "whitespace"},
+		{"group trailing space", "[[tool]]\nid='a'\nname='A'\nexecutable='x'\ngroup='System '\n[[tool.action]]\nname='r'\n", "whitespace"},
+		{"group with newline", "[[tool]]\nid='a'\nname='A'\nexecutable='x'\ngroup=\"Sys\\ntem\"\n[[tool.action]]\nname='r'\n", "single line"},
+		{"group with tab", "[[tool]]\nid='a'\nname='A'\nexecutable='x'\ngroup=\"Sys\\ttem\"\n[[tool.action]]\nname='r'\n", "single line"},
+		{"bad action output mode", "[[tool]]\nid='a'\nname='A'\nexecutable='x'\n[[tool.action]]\nname='r'\noutput='pipe'\n", "unknown output mode"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -272,5 +277,89 @@ func TestExampleManifestIsValid(t *testing.T) {
 	}
 	if len(cfg.Tools) == 0 {
 		t.Fatal("examples/tools.toml declares no tools")
+	}
+	// Every example tool must be grouped and every action described, so the
+	// palette stays organized and self-explanatory.
+	for _, tool := range cfg.Tools {
+		if tool.Group == "" {
+			t.Errorf("tool %q has no group", tool.ID)
+		}
+		if tool.Description == "" {
+			t.Errorf("tool %q has no description", tool.ID)
+		}
+		for _, action := range tool.Actions {
+			if action.Description == "" {
+				t.Errorf("tool %q action %q has no description", tool.ID, action.Name)
+			}
+			for _, param := range action.Params {
+				if param.Description == "" {
+					t.Errorf("tool %q action %q param %q has no description", tool.ID, action.Name, param.Key)
+				}
+			}
+		}
+	}
+}
+
+func TestGroupParsing(t *testing.T) {
+	cfg := mustParse(t, validManifest+"\n")
+	if cfg.Tools[0].Group != "" {
+		t.Fatalf("ungrouped tool got group %q", cfg.Tools[0].Group)
+	}
+	grouped := `
+[[tool]]
+id = "brew"
+name = "Homebrew"
+description = "packages"
+group = "System"
+executable = "brew"
+[[tool.action]]
+name = "update"
+args = ["update"]
+`
+	cfg = mustParse(t, grouped)
+	if cfg.Tools[0].Group != "System" {
+		t.Fatalf("group = %q, want System", cfg.Tools[0].Group)
+	}
+}
+
+func TestOutputFor(t *testing.T) {
+	tool := Tool{Output: OutputCapture}
+	if got := tool.OutputFor(Action{}); got != OutputCapture {
+		t.Fatalf("tool default = %q, want capture", got)
+	}
+	if got := tool.OutputFor(Action{Output: OutputPassthrough}); got != OutputPassthrough {
+		t.Fatalf("action override = %q, want passthrough", got)
+	}
+	passthroughTool := Tool{Output: OutputPassthrough}
+	if got := passthroughTool.OutputFor(Action{Output: OutputCapture}); got != OutputCapture {
+		t.Fatalf("action override = %q, want capture", got)
+	}
+	// A zero-value Tool (unvalidated) still resolves to capture.
+	var zero Tool
+	if got := zero.OutputFor(Action{}); got != OutputCapture {
+		t.Fatalf("zero tool = %q, want capture", got)
+	}
+}
+
+func TestActionOutputOverrideParses(t *testing.T) {
+	cfg := mustParse(t, `
+[[tool]]
+id = "mix"
+name = "Mix"
+description = "mixed output modes"
+executable = "mix-cli"
+[[tool.action]]
+name = "plain"
+args = ["plain"]
+[[tool.action]]
+name = "interactive"
+args = ["interactive"]
+output = "passthrough"
+`)
+	if got := cfg.Tools[0].OutputFor(cfg.Tools[0].Actions[0]); got != OutputCapture {
+		t.Fatalf("plain action = %q, want capture", got)
+	}
+	if got := cfg.Tools[0].OutputFor(cfg.Tools[0].Actions[1]); got != OutputPassthrough {
+		t.Fatalf("interactive action = %q, want passthrough", got)
 	}
 }

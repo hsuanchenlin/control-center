@@ -12,11 +12,21 @@ var (
 	titleStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("62"))
 	cursorStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("212")).Bold(true)
 	dimStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
+	groupStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("99"))
 	errStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
 	okStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
 	cmdStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("220"))
 	sectionStyle = lipgloss.NewStyle().Bold(true)
 )
+
+// groupTag renders the palette's "[Group] " prefix, or "" for ungrouped
+// tools.
+func groupTag(t config.Tool) string {
+	if t.Group == "" {
+		return ""
+	}
+	return groupStyle.Render("[" + t.Group + "] ")
+}
 
 // View renders the current screen.
 func (m Model) View() string {
@@ -47,15 +57,15 @@ func (m Model) viewPalette() string {
 	} else {
 		for i, t := range m.matches {
 			cursor := "  "
-			line := fmt.Sprintf("%s - %s", t.Name, t.Description)
+			line := fmt.Sprintf("%s%s - %s", groupTag(t), t.Name, t.Description)
 			if i == m.palCursor {
 				cursor = cursorStyle.Render("› ")
-				line = cursorStyle.Render(t.Name) + dimStyle.Render(" - "+t.Description)
+				line = groupTag(t) + cursorStyle.Render(t.Name) + dimStyle.Render(" - "+t.Description)
 			}
 			b.WriteString(cursor + line + "\n")
 		}
 	}
-	b.WriteString("\n" + dimStyle.Render("↑/↓ or Ctrl-P/Ctrl-N move · Enter select · Esc clear filter · Ctrl-C exit"))
+	b.WriteString("\n" + dimStyle.Render("↑/↓ or Ctrl-P/Ctrl-N/Ctrl-K/Ctrl-J move · Enter select · Esc clear filter · Ctrl-C exit"))
 	return b.String()
 }
 
@@ -71,7 +81,7 @@ func (m Model) viewAction() string {
 		}
 		b.WriteString(cursor + line + "\n")
 	}
-	b.WriteString("\n" + dimStyle.Render("↑/↓ move · Enter select · Esc back · Ctrl-C exit"))
+	b.WriteString("\n" + dimStyle.Render("j/k or ↑/↓ move · l/Enter select · h/←/Esc back · Ctrl-C exit"))
 	return b.String()
 }
 
@@ -91,13 +101,13 @@ func (m Model) viewConfirm() string {
 	b.WriteString(titleStyle.Render(m.tool.Name+" · "+m.action.Name) + dimStyle.Render(" - review command") + "\n\n")
 	b.WriteString(sectionStyle.Render("About to run:") + "\n\n")
 	b.WriteString("  " + cmdStyle.Render(m.spec.Display) + "\n")
-	if m.tool.Output == "passthrough" {
+	if m.tool.OutputFor(m.action) == "passthrough" {
 		b.WriteString("\n" + dimStyle.Render("This tool takes over the terminal; Ctrl-C is handled by the tool."))
 	}
 	if m.notice != "" {
 		b.WriteString("\n\n" + okStyle.Render(m.notice))
 	}
-	b.WriteString("\n\n" + dimStyle.Render("Enter run · e copy command · Esc back · Ctrl-C exit"))
+	b.WriteString("\n\n" + dimStyle.Render("l/Enter run · e copy command · h/←/Esc back · Ctrl-C exit"))
 	return b.String()
 }
 
@@ -126,13 +136,13 @@ func (m Model) viewOutput() string {
 		switch {
 		case m.shuttingDown:
 			b.WriteString("\n" + dimStyle.Render("waiting for the child to be reaped before exiting"))
-		case m.tool.Output == config.OutputPassthrough:
+		case m.tool.OutputFor(m.action) == config.OutputPassthrough:
 			b.WriteString("\n" + dimStyle.Render("Ctrl-C belongs to the child · waiting for it to exit"))
 		default:
-			b.WriteString("\n" + dimStyle.Render("↑/↓ scroll · Ctrl-C interrupt child · Ctrl-C again force-stop and exit"))
+			b.WriteString("\n" + dimStyle.Render("j/k or ↑/↓ scroll · Ctrl-C interrupt child · Ctrl-C again force-stop and exit"))
 		}
 	} else {
-		b.WriteString("\n" + dimStyle.Render("↑/↓ scroll · q/Esc back to palette · Ctrl-C exit"))
+		b.WriteString("\n" + dimStyle.Render("j/k or ↑/↓ scroll · d/u half page · g/G top/bottom · q/h/←/Esc back to palette · Ctrl-C exit"))
 	}
 	return b.String()
 }

@@ -13,6 +13,7 @@ func testRegistry(t *testing.T) *Registry {
 id = "market-monitor"
 name = "Market Monitor"
 description = "daily market reports"
+group = "Personal"
 executable = "market-monitor"
 [[tool.action]]
 name = "report"
@@ -22,6 +23,7 @@ args = ["report"]
 id = "sports"
 name = "Sports Scores"
 description = "game scores"
+group = "Personal"
 executable = "sports-scores-cli"
 [[tool.action]]
 name = "scores"
@@ -31,6 +33,7 @@ args = ["scores"]
 id = "echoforge"
 name = "EchoForge"
 description = "media pipeline"
+group = "System"
 executable = "echoforge"
 [[tool.action]]
 name = "start"
@@ -90,6 +93,32 @@ func TestMatchDescription(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("description not searched: %v", hits)
+	}
+}
+
+func TestMatchGroup(t *testing.T) {
+	r := testRegistry(t)
+	hits := r.Match("sys")
+	if len(hits) != 1 || hits[0].ID != "echoforge" {
+		t.Fatalf("group not searched: %v", hits)
+	}
+	hits = r.Match("personal")
+	if len(hits) != 2 {
+		t.Fatalf("group match returned %v, want the two Personal tools", hits)
+	}
+}
+
+func TestGroupSurvivesCloning(t *testing.T) {
+	r := testRegistry(t)
+	tool, ok := r.Tool("echoforge")
+	if !ok || tool.Group != "System" {
+		t.Fatalf("group lost in lookup: %+v", tool)
+	}
+	if got := r.Tools()[2].Group; got != "System" {
+		t.Fatalf("group lost in Tools(): %q", got)
+	}
+	if got := r.Match("echo")[0].Group; got != "System" {
+		t.Fatalf("group lost in Match(): %q", got)
 	}
 }
 
