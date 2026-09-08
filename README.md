@@ -179,8 +179,9 @@ Single-letter shortcuts never fire while a text field is focused.
 - **Terminal looks broken after a passthrough command** - control-center
   always restores the terminal after passthrough children; if a child
   crashed hard, run `reset` or `stty sane`, then report a bug.
-- **A tool needs interactive stdin** - set `output = "passthrough"` on that
-  tool so the child inherits the terminal.
+- **An action needs interactive stdin** - set `output = "passthrough"` on that
+  action so the child inherits the terminal. Set it on the tool instead when
+  every action needs passthrough mode.
 
 ## Development
 
