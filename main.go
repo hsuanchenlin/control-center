@@ -12,6 +12,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/hsuanchenlin/control-center/internal/config"
 	"github.com/hsuanchenlin/control-center/internal/executor"
+	"github.com/hsuanchenlin/control-center/internal/history"
 	"github.com/hsuanchenlin/control-center/internal/registry"
 	"github.com/hsuanchenlin/control-center/internal/tui"
 )
@@ -104,6 +105,21 @@ func runValidate(path string) int {
 	return 0
 }
 
+// loadHistory opens the persistent run-history store. History is
+// best-effort: when the state path cannot be resolved or read, the TUI runs
+// without it rather than failing to launch.
+func loadHistory() *history.Store {
+	path, err := history.DefaultPath()
+	if err != nil {
+		return nil
+	}
+	store, err := history.Load(path)
+	if err != nil {
+		return nil
+	}
+	return store
+}
+
 // programTerminal adapts the live Bubble Tea program to the executor's
 // Terminal boundary for passthrough children. The program pointer is wired
 // after construction because the program is built from the model.
@@ -126,6 +142,7 @@ func runTUI(cfg *config.Config) int {
 		Terminal:  term,
 		Signals:   signals,
 		Clock:     executor.SystemClock{},
+		History:   loadHistory(),
 	})
 	p := tea.NewProgram(model, tea.WithAltScreen(), tea.WithoutSignalHandler())
 	term.p = p

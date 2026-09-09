@@ -1,8 +1,9 @@
 # control-center
 
 A local, keyboard-first TUI launcher and configurator for a curated set of
-command-line tools. Open one fast terminal app, fuzzy-find a tool, pick an
-action, edit typed parameters, review the exact command, and run it.
+command-line tools. Open one fast terminal app, fuzzy-find a tool or jump
+straight to an action, edit typed parameters, review the exact command, and
+run it. Recent runs and pinned actions keep your daily commands one key away.
 
 control-center is **not** a shell replacement, a PATH scanner, an app
 launcher, a cloud service, or a daemon. It only knows the tools you
@@ -55,12 +56,15 @@ group = "System"            # optional category label, shown in the palette
                             # and matched by fuzzy search (single line, trimmed)
 executable = "my-cli"       # required; bare command name resolved via PATH
 output = "capture"          # optional: "capture" (default) or "passthrough"
+pinned = true               # optional: sorts to the top of the idle palette
 
 [[tool.action]]
 name = "run"                # required, unique within the tool
 description = "run it"
 args = ["run", "--fast"]    # fixed argv prefix, literal (no templating)
 output = "passthrough"      # optional per-action override of the tool's mode
+pinned = true               # optional: own row atop the idle palette, jumps
+                            # straight to its form when selected
 
 [[tool.action.param]]
 key = "target"              # required, stable, unique within the action
@@ -108,18 +112,19 @@ Rules enforced by `validate`:
 | `path`   | text input   | Leading `~` expands to your home dir; no shell globbing; `must_exist` is checked only when declared. |
 
 There is deliberately **no secret parameter type** - do not put tokens or
-passwords in the manifest; they are not persisted anywhere by
-control-center, and manifests are plain text.
+passwords in the manifest or in form fields: manifests are plain text, and
+confirmed parameter values are recorded in the local run history (see
+"Child processes, output, and privacy").
 
 ## Keybindings
 
 | Screen      | Keys                                                                 |
 |-------------|----------------------------------------------------------------------|
-| Palette     | Type to filter (matches name, description, and group) · ↑/↓ or Ctrl-P/Ctrl-N/Ctrl-K/Ctrl-J move · Enter select · Esc clear filter · Ctrl-C exit. The filter always has focus, so every printable key (including `q`) is literal input. |
+| Palette     | Type to filter tools **and actions** (matches ids, names, descriptions, group, and "tool action" pairs such as `brew upgrade`) · ↑/↓ or Ctrl-P/Ctrl-N/Ctrl-K/Ctrl-J move · Enter select (an action row jumps straight to its form or confirmation) · Esc clear filter · Ctrl-C exit. Empty filter: pinned actions and tools (`[Pinned]`) and recent runs (`[Recent]`, shown with their age such as `2h ago`) sort to the top; a recent run opens the confirmation screen with its previous values pre-populated. The filter always has focus, so every printable key (including `q`) is literal input. |
 | Action      | `j`/`k` or ↑/↓ (Ctrl-N/Ctrl-P, Ctrl-J/Ctrl-K) move · `l`/Enter select · `h`/←/Esc back · Ctrl-C exit |
 | Form        | Type to edit · Tab/Shift-Tab move fields · Enter submit · Esc back (edits preserved) · Ctrl-C exit |
 | Confirm     | `l`/Enter run · `e` copy the command to the clipboard without running · `h`/←/Esc back · Ctrl-C exit |
-| Output      | Capture: `j`/`k` or ↑/↓ (PgUp/PgDn) scroll · `d`/Ctrl-D and `u`/Ctrl-U half page · `g`/`G` top/bottom · Ctrl-C interrupt the child · Ctrl-C again force-stop and exit after cleanup · `q`/`h`/←/Esc back once finished. Passthrough: Ctrl-C belongs to the child; control-center resumes after it exits. |
+| Output      | Capture: `j`/`k` or ↑/↓ (PgUp/PgDn) scroll · `d`/Ctrl-D and `u`/Ctrl-U half page · `g`/`G` top/bottom · Ctrl-C interrupt the child · Ctrl-C again force-stop and exit after cleanup · once finished: `/` search the output (Enter keep, Esc clear), `n`/`N` next/previous match, `c`/`y` copy the whole output, `s` save it to a file, `q`/`h`/←/Esc back. Passthrough: Ctrl-C belongs to the child; control-center resumes after it exits. |
 
 Single-letter shortcuts never fire while a text field is focused.
 
@@ -153,7 +158,18 @@ Single-letter shortcuts never fire while a text field is focused.
   already delivered that Ctrl-C to the child.
 - control-center makes no network connections of its own. Whatever a
   launched child does (e.g. a tool's own update check) is that tool's
-  behavior. No telemetry, no background server, nothing persisted.
+  behavior. No telemetry, no background server.
+- **Run history** is the only persisted state: every confirmed run records
+  its tool id, action name, parameter values, and timestamp to
+  `$XDG_STATE_HOME/control-center/history.json` (falling back to
+  `~/.local/state/control-center/history.json`), bounded to the last 50
+  unique runs and written with owner-only permissions. Recording happens at
+  confirmation time, so a run whose child fails or is interrupted is kept
+  too: it surfaces as `[Recent]` with its age (e.g. `2h ago`) on the empty
+  palette and re-runs with its previous values, one key away for a
+  fix-and-retry.
+  Do not run actions whose parameter values you would not want in that file;
+  delete it at any time to start fresh.
 
 ## Adding or editing a tool safely
 
@@ -192,8 +208,9 @@ gofmt -l .
 ```
 
 Layout: `internal/config` (schema, loading, validation), `internal/registry`
-(lookup + fuzzy match), `internal/command` (argv assembly + display
-escaping), `internal/form` (schema → huh controls), `internal/executor`
-(process/clipboard/clock/terminal boundaries), `internal/tui` (Bubble Tea
+(lookup + fuzzy match over tools and actions), `internal/command` (argv
+assembly + display escaping), `internal/form` (schema → huh controls),
+`internal/executor` (process/clipboard/clock/terminal boundaries),
+`internal/history` (persistent recent runs), `internal/tui` (Bubble Tea
 state machine). Framework types stay out of `config`, `registry`, and
 `command`.

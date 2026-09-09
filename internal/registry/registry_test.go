@@ -169,3 +169,66 @@ func assertNestedValues(t *testing.T, tool config.Tool) {
 		t.Fatalf("registry value was mutated: %+v", tool)
 	}
 }
+
+func TestActionsListsAllInManifestOrder(t *testing.T) {
+	r := testRegistry(t)
+	refs := r.Actions()
+	if len(refs) != 3 {
+		t.Fatalf("refs = %v", refs)
+	}
+	got := [][2]string{}
+	for _, ref := range refs {
+		got = append(got, [2]string{ref.Tool.ID, ref.Action.Name})
+	}
+	want := [][2]string{{"market-monitor", "report"}, {"sports", "scores"}, {"echoforge", "start"}}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got %v want %v", got, want)
+		}
+	}
+}
+
+func TestMatchActionsByActionName(t *testing.T) {
+	r := testRegistry(t)
+	hits := r.MatchActions("report")
+	if len(hits) != 1 || hits[0].Action.Name != "report" || hits[0].Tool.ID != "market-monitor" {
+		t.Fatalf("hits = %v", hits)
+	}
+}
+
+func TestMatchActionsByToolAndActionName(t *testing.T) {
+	// "sports scores" spans the tool and action names; no single field of the
+	// action alone contains it as a subsequence except the combined one.
+	r := testRegistry(t)
+	hits := r.MatchActions("sports scores")
+	if len(hits) == 0 || hits[0].Tool.ID != "sports" || hits[0].Action.Name != "scores" {
+		t.Fatalf("hits = %v", hits)
+	}
+}
+
+func TestMatchActionsByToolName(t *testing.T) {
+	// The combined "tool name + action name" field lets a tool name surface
+	// its actions.
+	r := testRegistry(t)
+	hits := r.MatchActions("echoforge")
+	if len(hits) != 1 || hits[0].Action.Name != "start" || hits[0].Tool.ID != "echoforge" {
+		t.Fatalf("hits = %v", hits)
+	}
+}
+
+func TestMatchActionsEmptyQuery(t *testing.T) {
+	r := testRegistry(t)
+	if got := len(r.MatchActions("")); got != 3 {
+		t.Fatalf("empty query hits = %d", got)
+	}
+	if got := len(r.MatchActions("  ")); got != 3 {
+		t.Fatalf("blank query hits = %d", got)
+	}
+}
+
+func TestMatchActionsNoMatch(t *testing.T) {
+	r := testRegistry(t)
+	if hits := r.MatchActions("zzz"); len(hits) != 0 {
+		t.Fatalf("hits = %v", hits)
+	}
+}

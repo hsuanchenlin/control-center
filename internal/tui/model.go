@@ -5,6 +5,7 @@ package tui
 import (
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"github.com/hsuanchenlin/control-center/internal/config"
 	"github.com/hsuanchenlin/control-center/internal/executor"
 	"github.com/hsuanchenlin/control-center/internal/form"
+	"github.com/hsuanchenlin/control-center/internal/history"
 	"github.com/hsuanchenlin/control-center/internal/registry"
 )
 
@@ -47,13 +49,26 @@ type Deps struct {
 	Clock executor.Clock
 	// MaxOutputLines bounds the retained child output (default 5000).
 	MaxOutputLines int
+	// History, when set, records confirmed runs and surfaces them on the
+	// empty palette; nil disables persistence.
+	History *history.Store
+	// SaveOutput writes captured output to a path; nil uses the default
+	// (~-expanding os.WriteFile).
+	SaveOutput func(path, content string) error
 }
 
 // Messages driving the async child lifecycle.
 type (
 	outputTickMsg time.Time
 	childDoneMsg  executor.Result
-	copiedMsg     struct{ err error }
+	copiedMsg     struct {
+		err error
+		ok  string // success notice
+	}
+	savedMsg struct {
+		err  error
+		path string
+	}
 	// signalMsg carries the raw signal; it is routed inside Update so the
 	// decision is made against the same model state that applies it.
 	signalMsg struct{ sig os.Signal }
@@ -149,6 +164,30 @@ func (s *signalLifecycle) end() bool {
 	return pendingQuit
 }
 
+// itemKind enumerates what a palette row represents.
+type itemKind int
+
+const (
+	itemTool itemKind = iota
+	itemAction
+	itemRecent
+)
+
+// paletteItem is one selectable palette row: a whole tool, one of its
+// actions (search hit or pinned), or a recent run with pre-populated values.
+type paletteItem struct {
+	kind   itemKind
+	tool   config.Tool
+	action config.Action // itemAction and itemRecent
+	params form.Values   // itemRecent
+	at     time.Time     // itemRecent
+	pinned bool          // itemTool / itemAction
+}
+
+// recentPaletteLimit caps how many recent runs the idle palette lists so the
+// section never crowds out the tool catalog.
+const recentPaletteLimit = 5
+
 // Model is the root Bubble Tea model.
 type Model struct {
 	deps   Deps
@@ -158,7 +197,7 @@ type Model struct {
 
 	// palette
 	filter    textinput.Model
-	matches   []config.Tool
+	items     []paletteItem
 	palCursor int
 
 	// action picker
@@ -170,15 +209,30 @@ type Model struct {
 	preserved map[formStateKey]form.Values // per tool/action, survives back navigation and reselect
 	action    config.Action
 	spec      command.Spec
-	notice    string // transient status line (e.g. copy result)
+	vals      form.Values // values behind spec, recorded to history on run
+	notice    string      // transient status line (e.g. copy result)
+	// actionDirect marks that the form/confirm was reached straight from the
+	// palette (action search hit or recent run), so backing out returns to
+	// the palette rather than the action picker.
+	actionDirect bool
 
 	// output
 	viewport viewport.Model
 	buffer   *executor.LineBuffer
 	rendered int // buffer version last drawn into the viewport
+	content  string
 	running  bool
 	control  *executor.RunControl
 	result   *executor.Result
+	// search prompt over the finished output
+	searchInput textinput.Model
+	searching   bool
+	searchQuery string
+	matchLines  []int
+	matchPos    int
+	// save prompt for the finished output
+	saveInput textinput.Model
+	saving    bool
 	// shuttingDown means a force-stop was requested and the app quits as soon
 	// as the child is reaped; quitting means tea.Quit has been returned and
 	// the screen is blanked, so the two must never be conflated.
@@ -195,14 +249,23 @@ func New(deps Deps) Model {
 	ti.Prompt = "/ "
 	ti.Focus()
 
+	search := textinput.New()
+	search.Placeholder = "search output"
+	search.Prompt = "/ "
+
+	save := textinput.New()
+	save.Prompt = "save to: "
+
 	m := Model{
-		deps:      deps,
-		screen:    screenPalette,
-		filter:    ti,
-		matches:   deps.Registry.Tools(),
-		preserved: map[formStateKey]form.Values{},
-		signals:   &signalLifecycle{clock: deps.Clock},
+		deps:        deps,
+		screen:      screenPalette,
+		filter:      ti,
+		searchInput: search,
+		saveInput:   save,
+		preserved:   map[formStateKey]form.Values{},
+		signals:     &signalLifecycle{clock: deps.Clock},
 	}
+	m.applyFilter()
 	return m
 }
 
@@ -290,7 +353,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.notice = "copy failed: " + msg.err.Error()
 		} else {
-			m.notice = "command copied to clipboard"
+			m.notice = msg.ok
+		}
+		return m, nil
+
+	case savedMsg:
+		if msg.err != nil {
+			m.notice = "save failed: " + msg.err.Error()
+		} else {
+			m.notice = "output saved to " + msg.path
 		}
 		return m, nil
 
@@ -319,18 +390,17 @@ func (m Model) updatePalette(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if ok {
 		switch msg := key; {
 		case msg.Type == tea.KeyEnter:
-			if len(m.matches) == 0 {
+			if len(m.items) == 0 {
 				return m, nil
 			}
-			m.tool = m.matches[m.palCursor]
-			return m.enterTool()
+			return m.enterItem(m.items[m.palCursor])
 		case isUp(msg):
 			if m.palCursor > 0 {
 				m.palCursor--
 			}
 			return m, nil
 		case isDown(msg):
-			if m.palCursor < len(m.matches)-1 {
+			if m.palCursor < len(m.items)-1 {
 				m.palCursor++
 			}
 			return m, nil
@@ -349,10 +419,118 @@ func (m Model) updatePalette(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) applyFilter() {
-	m.matches = m.deps.Registry.Match(m.filter.Value())
-	if m.palCursor >= len(m.matches) {
-		m.palCursor = max(0, len(m.matches)-1)
+	if strings.TrimSpace(m.filter.Value()) == "" {
+		m.items = m.idleItems()
+	} else {
+		m.items = m.searchItems(m.filter.Value())
 	}
+	if m.palCursor >= len(m.items) {
+		m.palCursor = max(0, len(m.items)-1)
+	}
+}
+
+// idleItems builds the palette for an empty filter: pinned actions, pinned
+// tools, then the most recent unique runs, then the remaining tools in
+// manifest order.
+func (m *Model) idleItems() []paletteItem {
+	var items []paletteItem
+	tools := m.deps.Registry.Tools()
+	for _, t := range tools {
+		for _, a := range t.Actions {
+			if a.Pinned {
+				items = append(items, paletteItem{kind: itemAction, tool: t, action: a, pinned: true})
+			}
+		}
+	}
+	for _, t := range tools {
+		if t.Pinned {
+			items = append(items, paletteItem{kind: itemTool, tool: t, pinned: true})
+		}
+	}
+	if h := m.deps.History; h != nil {
+		shown := 0
+		for _, e := range h.Entries() {
+			if shown >= recentPaletteLimit {
+				break
+			}
+			tool, ok := m.deps.Registry.Tool(e.ToolID)
+			if !ok {
+				continue // action's tool left the manifest
+			}
+			action, ok := findAction(tool, e.ActionName)
+			if !ok {
+				continue // action left the manifest
+			}
+			items = append(items, paletteItem{
+				kind: itemRecent, tool: tool, action: action,
+				params: form.Values(e.Params), at: e.At,
+			})
+			shown++
+		}
+	}
+	for _, t := range tools {
+		if !t.Pinned {
+			items = append(items, paletteItem{kind: itemTool, tool: t})
+		}
+	}
+	return items
+}
+
+// searchItems merges scored tool and action matches for a non-empty filter,
+// ranked by descending score; ties keep tools ahead of their own actions.
+func (m *Model) searchItems(query string) []paletteItem {
+	toolHits := m.deps.Registry.MatchTools(query)
+	actionHits := m.deps.Registry.MatchActions(query)
+	var items []paletteItem
+	ti, ai := 0, 0
+	for ti < len(toolHits) || ai < len(actionHits) {
+		switch {
+		case ai >= len(actionHits):
+			items = append(items, paletteItem{kind: itemTool, tool: toolHits[ti].Tool, pinned: toolHits[ti].Tool.Pinned})
+			ti++
+		case ti >= len(toolHits):
+			items = append(items, paletteItem{kind: itemAction, tool: actionHits[ai].Tool, action: actionHits[ai].Action, pinned: actionHits[ai].Action.Pinned})
+			ai++
+		case toolHits[ti].Score >= actionHits[ai].Score:
+			items = append(items, paletteItem{kind: itemTool, tool: toolHits[ti].Tool, pinned: toolHits[ti].Tool.Pinned})
+			ti++
+		default:
+			items = append(items, paletteItem{kind: itemAction, tool: actionHits[ai].Tool, action: actionHits[ai].Action, pinned: actionHits[ai].Action.Pinned})
+			ai++
+		}
+	}
+	return items
+}
+
+// enterItem selects a palette row: tools open their action picker (or only
+// action), action hits jump straight to the form, and recent runs jump to
+// the confirmation screen with the recorded values.
+func (m Model) enterItem(item paletteItem) (tea.Model, tea.Cmd) {
+	m.tool = item.tool
+	switch item.kind {
+	case itemTool:
+		return m.enterTool()
+	case itemAction:
+		m.action = item.action
+		m.actionDirect = true
+		return m.enterForm()
+	case itemRecent:
+		m.action = item.action
+		m.actionDirect = true
+		m.preserved[m.formKey()] = item.params
+		return m.enterConfirm(item.params)
+	}
+	return m, nil
+}
+
+// findAction resolves an action by name, or reports it gone.
+func findAction(tool config.Tool, name string) (config.Action, bool) {
+	for _, a := range tool.Actions {
+		if a.Name == name {
+			return a, true
+		}
+	}
+	return config.Action{}, false
 }
 
 // formKey identifies a tool/action pair so preserved form values never leak
@@ -365,6 +543,7 @@ func (m Model) formKey() formStateKey {
 // the form when the tool has exactly one action.
 func (m Model) enterTool() (tea.Model, tea.Cmd) {
 	m.actCursor = 0
+	m.actionDirect = false
 	if len(m.tool.Actions) == 1 {
 		m.action = m.tool.Actions[0]
 		return m.enterForm()
@@ -416,11 +595,7 @@ func (m Model) updateForm(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if key, ok := msg.(tea.KeyMsg); ok && key.Type == tea.KeyEsc {
 		// Esc backs out of the form without losing edits.
 		m.preserved[m.formKey()] = m.form.Snapshot()
-		if len(m.tool.Actions) == 1 {
-			m.screen = screenPalette
-		} else {
-			m.screen = screenAction
-		}
+		m.backFromForm()
 		return m, nil
 	}
 	fm, cmd := m.form.Model.Update(msg)
@@ -439,14 +614,21 @@ func (m Model) updateForm(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.enterConfirm(vals)
 	case huh.StateAborted:
 		m.preserved[m.formKey()] = m.form.Snapshot()
-		if len(m.tool.Actions) == 1 {
-			m.screen = screenPalette
-		} else {
-			m.screen = screenAction
-		}
+		m.backFromForm()
 		return m, nil
 	}
 	return m, cmd
+}
+
+// backFromForm returns to wherever the form was entered from: the palette
+// for direct action/recent jumps and single-action tools, else the action
+// picker.
+func (m *Model) backFromForm() {
+	if m.actionDirect || len(m.tool.Actions) == 1 {
+		m.screen = screenPalette
+	} else {
+		m.screen = screenAction
+	}
 }
 
 func (m Model) enterConfirm(vals form.Values) (tea.Model, tea.Cmd) {
@@ -454,15 +636,13 @@ func (m Model) enterConfirm(vals form.Values) (tea.Model, tea.Cmd) {
 	if err != nil {
 		m.notice = err.Error()
 		if len(m.action.Params) == 0 {
-			m.screen = screenAction
-			if len(m.tool.Actions) == 1 {
-				m.screen = screenPalette
-			}
+			m.backFromForm()
 			return m, nil
 		}
 		return m.enterForm()
 	}
 	m.spec = spec
+	m.vals = vals
 	m.notice = ""
 	m.screen = screenConfirm
 	return m, nil
@@ -484,14 +664,11 @@ func (m Model) updateConfirm(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		display := m.spec.Display
 		return m, func() tea.Msg {
-			return copiedMsg{err: clip.WriteString(display)}
+			return copiedMsg{err: clip.WriteString(display), ok: "command copied to clipboard"}
 		}
 	case key.Type == tea.KeyEsc || key.Type == tea.KeyLeft || isRunes(key, "h"):
 		if len(m.action.Params) == 0 {
-			m.screen = screenAction
-			if len(m.tool.Actions) == 1 {
-				m.screen = screenPalette
-			}
+			m.backFromForm()
 			return m, nil
 		}
 		return m.enterForm()
@@ -510,6 +687,11 @@ func (m Model) startRun() (tea.Model, tea.Cmd) {
 		m.screen = screenOutput
 		m.refreshViewport()
 		return m, nil
+	}
+	// The command was confirmed and the executable resolved: remember the run.
+	// History is best-effort; a failed write must not block execution.
+	if h := m.deps.History; h != nil {
+		_ = h.Record(m.tool.ID, m.action.Name, map[string]string(m.vals))
 	}
 	m.buffer = executor.NewLineBuffer(m.deps.MaxOutputLines)
 	m.result = nil
@@ -560,16 +742,58 @@ func (m Model) updateOutput(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if !ok {
 		return m, nil
 	}
+	// Modal prompts own the keyboard while open; their keys never scroll.
+	if m.saving {
+		return m.updateSavePrompt(key)
+	}
+	if m.searching {
+		return m.updateSearchPrompt(key)
+	}
 	if key.Type == tea.KeyEsc || key.Type == tea.KeyLeft || isRunes(key, "q") || isRunes(key, "h") {
 		if m.running {
 			// Never steal keys from a running child's stream; only Ctrl-C
 			// interrupts.
 			return m, nil
 		}
+		m.clearSearch()
 		m.screen = screenPalette
 		m.result = nil
 		m.notice = ""
+		// A run recorded while on this screen shows up in the idle palette.
+		m.applyFilter()
 		return m, nil
+	}
+	if !m.running {
+		switch {
+		case isRunes(key, "/"):
+			m.searching = true
+			m.searchInput.SetValue(m.searchQuery)
+			m.searchInput.Focus()
+			m.searchInput.CursorEnd()
+			return m, textinput.Blink
+		case isRunes(key, "n"):
+			m.jumpMatch(1)
+			return m, nil
+		case isRunes(key, "N"):
+			m.jumpMatch(-1)
+			return m, nil
+		case isRunes(key, "c") || isRunes(key, "y"):
+			clip := m.deps.Clipboard
+			if clip == nil {
+				m.notice = "clipboard unavailable"
+				return m, nil
+			}
+			content := m.content
+			return m, func() tea.Msg {
+				return copiedMsg{err: clip.WriteString(content), ok: "output copied to clipboard"}
+			}
+		case isRunes(key, "s"):
+			m.saving = true
+			m.saveInput.SetValue(m.defaultSaveName())
+			m.saveInput.Focus()
+			m.saveInput.CursorEnd()
+			return m, textinput.Blink
+		}
 	}
 	switch {
 	case isRunes(key, "j"):
@@ -596,6 +820,127 @@ func (m Model) updateOutput(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+// updateSearchPrompt handles keys while the output search prompt is focused.
+// Typing live-highlights matches and jumps to the first one; Enter keeps the
+// search and closes the prompt (n/N then navigate); Esc cancels the search.
+func (m Model) updateSearchPrompt(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch key.Type {
+	case tea.KeyEnter:
+		m.searching = false
+		m.searchInput.Blur()
+		m.applySearch()
+		return m, nil
+	case tea.KeyEsc:
+		m.clearSearch()
+		m.notice = ""
+		return m, nil
+	}
+	var cmd tea.Cmd
+	m.searchInput, cmd = m.searchInput.Update(key)
+	m.applySearch()
+	return m, cmd
+}
+
+// applySearch recomputes matches for the current query against the finished
+// output, highlights them in the viewport, and jumps to the first match.
+func (m *Model) applySearch() {
+	q := m.searchInput.Value()
+	m.searchQuery = q
+	m.matchLines = nil
+	m.matchPos = 0
+	if q == "" {
+		m.viewport.SetContent(m.content)
+		m.notice = ""
+		return
+	}
+	lines := strings.Split(m.content, "\n")
+	lq := strings.ToLower(q)
+	for i, line := range lines {
+		if strings.Contains(strings.ToLower(line), lq) {
+			m.matchLines = append(m.matchLines, i)
+		}
+	}
+	for i, line := range lines {
+		lines[i] = highlightMatches(line, lq)
+	}
+	m.viewport.SetContent(strings.Join(lines, "\n"))
+	if len(m.matchLines) == 0 {
+		m.notice = "no matches for " + q
+		return
+	}
+	m.viewport.SetYOffset(m.matchLines[0])
+	m.notice = fmt.Sprintf("match %d/%d for %q", 1, len(m.matchLines), q)
+}
+
+// jumpMatch moves to the next/previous match, wrapping around.
+func (m *Model) jumpMatch(delta int) {
+	if len(m.matchLines) == 0 {
+		return
+	}
+	m.matchPos = (m.matchPos + delta + len(m.matchLines)) % len(m.matchLines)
+	m.viewport.SetYOffset(m.matchLines[m.matchPos])
+	m.notice = fmt.Sprintf("match %d/%d for %q", m.matchPos+1, len(m.matchLines), m.searchQuery)
+}
+
+func (m *Model) clearSearch() {
+	m.searching = false
+	m.searchQuery = ""
+	m.matchLines = nil
+	m.matchPos = 0
+	m.searchInput.SetValue("")
+	m.searchInput.Blur()
+	if m.buffer != nil {
+		m.viewport.SetContent(m.content)
+	}
+}
+
+// updateSavePrompt handles keys while the save-path prompt is focused.
+func (m Model) updateSavePrompt(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch key.Type {
+	case tea.KeyEnter:
+		path := strings.TrimSpace(m.saveInput.Value())
+		m.saving = false
+		m.saveInput.Blur()
+		if path == "" {
+			m.notice = "save cancelled: empty path"
+			return m, nil
+		}
+		content := m.content
+		save := m.deps.SaveOutput
+		if save == nil {
+			save = defaultSaveOutput
+		}
+		return m, func() tea.Msg {
+			return savedMsg{err: save(path, content), path: path}
+		}
+	case tea.KeyEsc:
+		m.saving = false
+		m.saveInput.Blur()
+		return m, nil
+	}
+	var cmd tea.Cmd
+	m.saveInput, cmd = m.saveInput.Update(key)
+	return m, cmd
+}
+
+// defaultSaveName prefills the save prompt: control-center-<tool>-<timestamp>.log.
+func (m Model) defaultSaveName() string {
+	name := m.tool.ID
+	if name == "" {
+		name = "output"
+	}
+	return fmt.Sprintf("control-center-%s-%s.log", name, m.now().Format("20060102-150405"))
+}
+
+// defaultSaveOutput writes content to path, expanding a leading "~".
+func defaultSaveOutput(path, content string) error {
+	expanded, err := config.ExpandPath(path)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(expanded, []byte(content), 0o644)
+}
+
 func (m *Model) refreshViewport() {
 	if m.buffer == nil {
 		return
@@ -614,6 +959,7 @@ func (m *Model) refreshViewport() {
 	if content == "" && !m.running && m.result != nil && m.result.Err == nil {
 		content = "(no output)"
 	}
+	m.content = content
 	m.viewport.SetContent(content)
 	if m.running && followOutput {
 		m.viewport.GotoBottom()

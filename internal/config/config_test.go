@@ -363,3 +363,48 @@ output = "passthrough"
 		t.Fatalf("interactive action = %q, want passthrough", got)
 	}
 }
+
+func TestPinnedParses(t *testing.T) {
+	cfg := mustParse(t, `
+[[tool]]
+id = "pin"
+name = "Pin"
+description = "pinned tool"
+executable = "pin-cli"
+pinned = true
+
+[[tool.action]]
+name = "run"
+description = "run it"
+args = ["run"]
+
+[[tool.action]]
+name = "fav"
+description = "favorite action"
+args = ["fav"]
+pinned = true
+
+[[tool]]
+id = "plain"
+name = "Plain"
+description = "unpinned"
+executable = "plain-cli"
+
+[[tool.action]]
+name = "run"
+description = "run it"
+args = ["run"]
+`)
+	if !cfg.Tools[0].Pinned {
+		t.Fatal("tool pinned not parsed")
+	}
+	if cfg.Tools[0].Actions[0].Pinned {
+		t.Fatal("action run should default to unpinned")
+	}
+	if !cfg.Tools[0].Actions[1].Pinned {
+		t.Fatal("action pinned not parsed")
+	}
+	if cfg.Tools[1].Pinned || cfg.Tools[1].Actions[0].Pinned {
+		t.Fatal("pinned must default to false")
+	}
+}
