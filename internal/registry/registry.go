@@ -1,5 +1,5 @@
 // Package registry provides immutable lookup over a validated manifest and
-// the fuzzy matching used by the tool palette.
+// the fuzzy matching over tools and individual actions used by the palette.
 package registry
 
 import (
