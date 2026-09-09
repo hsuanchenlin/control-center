@@ -24,10 +24,10 @@ type Spec struct {
 	Display string
 }
 
-// Build assembles the argv for an action from raw form values keyed by param
-// key. Every value is validated against its param's type and constraints.
-// Assembly order: the action's fixed args, then flag params in manifest
-// order, then positional params ordered by their positional index.
+// Build assembles the argv and environment for an action from raw form values
+// keyed by param key. Every value is validated against its param's type and
+// constraints. Argv assembly order: the action's fixed args, then flag params
+// in manifest order, then positional params ordered by their positional index.
 func Build(tool config.Tool, action config.Action, values map[string]string) (Spec, error) {
 	args := make([]string, 0, len(action.Args)+len(action.Params)*2)
 	args = append(args, action.Args...)

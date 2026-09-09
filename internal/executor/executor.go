@@ -133,14 +133,14 @@ type Runner struct {
 	// passthrough; defaults to checking os.Stdin.
 	StdinIsTerminal func() bool
 	// StartProcess, when set, replaces the real exec for capture mode; tests
-	// inject fakes here. It receives the resolved path and argv and returns
-	// a wait function yielding the exit code.
+	// inject fakes here. It receives the resolved path, argv, and env overrides,
+	// and returns a wait function yielding the exit code.
 	StartProcess func(ctx context.Context, path string, args []string, env []string, stdout, stderr io.Writer) (wait func() (int, error), err error)
 	// StartPassthrough, when set, replaces the real exec for passthrough
 	// mode; tests inject fakes here so hermetic tests never spawn real
-	// tools. It receives the resolved path, argv, and terminal streams and
-	// returns a wait function yielding the exit code. Cancellation of ctx
-	// must interrupt the child the same way the real implementation does.
+	// tools. It receives the resolved path, argv, env overrides, and terminal
+	// streams and returns a wait function yielding the exit code. Cancellation
+	// of ctx must interrupt the child the same way the real implementation does.
 	StartPassthrough func(ctx context.Context, path string, args []string, env []string, stdin io.Reader, stdout, stderr io.Writer) (wait func() (int, error), err error)
 }
 

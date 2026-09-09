@@ -6,22 +6,7 @@
 # Values marked ADAPT are conservative placeholders: check each tool's own
 # `--help` for the exact current syntax before relying on them.
 #
-# Schema summary (see README.md for the full reference):
-#   [[tool]]            id, name, description, group (optional category),
-#                       executable, output ("capture"|"passthrough"),
-#                       pinned (optional; sorts to the top of the idle palette)
-#   [[tool.action]]     name, description, args (fixed argv prefix),
-#                       output (optional per-action override),
-#                       pinned (optional; gets its own row atop the idle palette)
-#   [[tool.action.param]]  key, label, type (text|select|toggle|number|path),
-#                          required, default, choices, min/max, must_exist,
-#                          multiline (text only),
-#                          and exactly one of: flag = "--flag", positional = <index>,
-#                          or env = "DEBUG" (inherited environment override).
-# Path inputs suggest files/directories as you type; Ctrl-E accepts a suggestion.
-# Multiline text: Enter inserts a newline; Ctrl-D advances/submits.
-# Environment and multiline values are visible in confirmation and stored in
-# history like other values: never use these fields for secrets.
+# Schema reference is in README.md.
 #
 # Example parameters to add under an action (adapt to the child's interface):
 # [[tool.action.param]]

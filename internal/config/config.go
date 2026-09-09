@@ -117,9 +117,10 @@ type Param struct {
 	MustExist bool `toml:"must_exist"`
 }
 
-// DefaultPath returns the default manifest location:
+// DefaultPath returns the legacy default manifest file path:
 // $XDG_CONFIG_HOME/control-center/tools.toml, falling back to
 // ~/.config/control-center/tools.toml (macOS and Linux alike).
+// Callers using the modern directory loader should use filepath.Dir on this result.
 func DefaultPath() (string, error) {
 	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
 		return filepath.Join(xdg, "control-center", "tools.toml"), nil
@@ -131,8 +132,9 @@ func DefaultPath() (string, error) {
 	return filepath.Join(home, ".config", "control-center", "tools.toml"), nil
 }
 
-// Load reads and validates the manifest at path. A missing file yields a
-// descriptive error naming the expected location.
+// Load reads and validates the manifest at path. If path is a directory, it
+// delegates to LoadDirectory. A missing file yields a descriptive error naming
+// the expected location.
 func Load(path string) (*Config, error) {
 	if info, err := os.Stat(path); err == nil && info.IsDir() {
 		return LoadDirectory(path)
