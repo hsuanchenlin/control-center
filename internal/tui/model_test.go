@@ -154,8 +154,8 @@ func asModel(t *testing.T, tm tea.Model) Model {
 
 func TestPaletteInitialState(t *testing.T) {
 	m, _ := newTestModel(t)
-	if m.screen != screenPalette || len(m.matches) != 3 {
-		t.Fatalf("screen=%v matches=%d", m.screen, len(m.matches))
+	if m.screen != screenPalette || len(m.items) != 3 {
+		t.Fatalf("screen=%v items=%d", m.screen, len(m.items))
 	}
 	if view := m.View(); !strings.Contains(view, "Multi Tool") {
 		t.Fatalf("view missing tools:\n%s", view)
@@ -166,8 +166,12 @@ func TestPaletteFilterNarrows(t *testing.T) {
 	m, _ := newTestModel(t)
 	tm, _ := m.Update(runes("solo"))
 	m = asModel(t, tm)
-	if len(m.matches) != 1 || m.matches[0].ID != "solo" {
-		t.Fatalf("matches = %v", m.matches)
+	// The tool ranks first; its actions follow as direct-jump rows.
+	if len(m.items) != 2 || m.items[0].kind != itemTool || m.items[0].tool.ID != "solo" {
+		t.Fatalf("items = %v", m.items)
+	}
+	if m.items[1].kind != itemAction || m.items[1].action.Name != "run" {
+		t.Fatalf("items = %v", m.items)
 	}
 }
 
@@ -878,8 +882,8 @@ func TestPaletteGroupSearch(t *testing.T) {
 	m, _ := newTestModel(t)
 	tm, _ := m.Update(runes("sys"))
 	m = asModel(t, tm)
-	if len(m.matches) != 1 || m.matches[0].ID != "multi" {
-		t.Fatalf("group search matches = %v", m.matches)
+	if len(m.items) != 1 || m.items[0].tool.ID != "multi" {
+		t.Fatalf("group search items = %v", m.items)
 	}
 }
 

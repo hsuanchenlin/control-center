@@ -43,13 +43,59 @@ func (r *Registry) Tool(id string) (config.Tool, bool) {
 	return cloneTool(r.tools[i]), true
 }
 
+// ToolMatch is a tool ranked against a fuzzy query.
+type ToolMatch struct {
+	Tool  config.Tool
+	Score int
+}
+
+// ActionRef pairs a tool with one of its actions, so individual actions can
+// be indexed and searched as palette entities.
+type ActionRef struct {
+	Tool   config.Tool
+	Action config.Action
+}
+
+// ActionMatch is an action ranked against a fuzzy query.
+type ActionMatch struct {
+	ActionRef
+	Score int
+}
+
+// Actions returns every action of every tool in manifest order.
+func (r *Registry) Actions() []ActionRef {
+	var out []ActionRef
+	for _, t := range r.tools {
+		tool := cloneTool(t)
+		for _, a := range tool.Actions {
+			out = append(out, ActionRef{Tool: tool, Action: a})
+		}
+	}
+	return out
+}
+
 // Match ranks tools against a fuzzy query over id, name, description, and
 // group. An empty query returns all tools in manifest order. Results are
 // ordered by descending score, ties broken by manifest order.
 func (r *Registry) Match(query string) []config.Tool {
+	scored := r.MatchTools(query)
+	out := make([]config.Tool, len(scored))
+	for i, sm := range scored {
+		out[i] = sm.Tool
+	}
+	return out
+}
+
+// MatchTools is Match with scores preserved, so callers can merge tool and
+// action results into one ranked list.
+func (r *Registry) MatchTools(query string) []ToolMatch {
 	query = strings.ToLower(strings.TrimSpace(query))
 	if query == "" {
-		return r.Tools()
+		out := make([]ToolMatch, 0, len(r.tools))
+		for _, t := range r.tools {
+			out = append(out, ToolMatch{Tool: cloneTool(t)})
+		}
+		return out
 	}
 	type scored struct {
 		idx   int
@@ -73,9 +119,60 @@ func (r *Registry) Match(query string) []config.Tool {
 		}
 		return hits[a].idx < hits[b].idx
 	})
-	out := make([]config.Tool, len(hits))
+	out := make([]ToolMatch, len(hits))
 	for i, h := range hits {
-		out[i] = cloneTool(r.tools[h.idx])
+		out[i] = ToolMatch{Tool: cloneTool(r.tools[h.idx]), Score: h.score}
+	}
+	return out
+}
+
+// MatchActions ranks individual actions against a fuzzy query over the action
+// name, its description, and the combined "tool name + action name" (so
+// "brew upgrade" matches Homebrew's upgrade action). An empty query returns
+// all actions in manifest order; results are ordered by descending score,
+// ties broken by manifest order.
+func (r *Registry) MatchActions(query string) []ActionMatch {
+	query = strings.ToLower(strings.TrimSpace(query))
+	if query == "" {
+		refs := r.Actions()
+		out := make([]ActionMatch, len(refs))
+		for i, ref := range refs {
+			out[i] = ActionMatch{ActionRef: ref}
+		}
+		return out
+	}
+	type scored struct {
+		idx   int
+		score int
+		ref   ActionRef
+	}
+	var hits []scored
+	idx := 0
+	for _, t := range r.tools {
+		tool := cloneTool(t)
+		for _, a := range tool.Actions {
+			combined := t.Name + " " + a.Name
+			best := -1
+			for _, field := range []string{a.Name, a.Description, combined} {
+				if s, ok := fuzzyScore(query, strings.ToLower(field)); ok && s > best {
+					best = s
+				}
+			}
+			if best >= 0 {
+				hits = append(hits, scored{idx: idx, score: best, ref: ActionRef{Tool: tool, Action: a}})
+			}
+			idx++
+		}
+	}
+	sort.SliceStable(hits, func(a, b int) bool {
+		if hits[a].score != hits[b].score {
+			return hits[a].score > hits[b].score
+		}
+		return hits[a].idx < hits[b].idx
+	})
+	out := make([]ActionMatch, len(hits))
+	for i, h := range hits {
+		out[i] = ActionMatch{ActionRef: h.ref, Score: h.score}
 	}
 	return out
 }

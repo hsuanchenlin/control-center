@@ -6,9 +6,11 @@
 #
 # Schema summary (see README.md for the full reference):
 #   [[tool]]            id, name, description, group (optional category),
-#                       executable, output ("capture"|"passthrough")
+#                       executable, output ("capture"|"passthrough"),
+#                       pinned (optional; sorts to the top of the idle palette)
 #   [[tool.action]]     name, description, args (fixed argv prefix),
-#                       output (optional per-action override)
+#                       output (optional per-action override),
+#                       pinned (optional; gets its own row atop the idle palette)
 #   [[tool.action.param]]  key, label, type (text|select|toggle|number|path),
 #                          required, default, choices, min/max, must_exist,
 #                          and exactly one of: flag = "--flag"  or  positional = <index>
@@ -269,6 +271,7 @@ flag = "--format"                # ADAPT
 name = "quote"
 description = "Quote a single symbol"
 args = ["quote"]
+pinned = true              # surfaced as its own row atop the idle palette
 
 [[tool.action.param]]
 key = "symbol"
@@ -322,6 +325,7 @@ name = "Daily Agenda"
 description = "review today's schedule and tasks"
 group = "Daily"
 executable = "daily-agenda"
+pinned = true              # sorts to the top of the idle palette
 
 [[tool.action]]
 name = "show"

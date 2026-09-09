@@ -53,7 +53,10 @@ type Tool struct {
 	Group      string     `toml:"group"`
 	Executable string     `toml:"executable"`
 	Output     OutputMode `toml:"output"`
-	Actions    []Action   `toml:"action"`
+	// Pinned sorts the tool to the top of the palette when the filter is
+	// empty.
+	Pinned  bool     `toml:"pinned"`
+	Actions []Action `toml:"action"`
 }
 
 // Action is one invocable operation of a tool.
@@ -66,7 +69,10 @@ type Action struct {
 	// Output optionally overrides the tool's output mode for this action
 	// (e.g. one interactive action on an otherwise captured tool).
 	Output OutputMode `toml:"output"`
-	Params []Param    `toml:"param"`
+	// Pinned surfaces the action as its own palette row at the top when the
+	// filter is empty.
+	Pinned bool    `toml:"pinned"`
+	Params []Param `toml:"param"`
 }
 
 // OutputFor returns the action's effective output mode: the action's own
