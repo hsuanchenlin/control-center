@@ -13,8 +13,10 @@ import (
 func LoadDirectory(dir string) (*Config, error) {
 	files := []string{}
 	main := filepath.Join(dir, "tools.toml")
-	if _, err := os.Stat(main); err == nil {
-		files = append(files, main)
+	if fi, err := os.Stat(main); err == nil {
+		if !fi.IsDir() {
+			files = append(files, main)
+		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}

@@ -333,7 +333,7 @@ func validateParams(where string, params []Param) error {
 		switch p.Type {
 		case ParamToggle:
 			if !hasFlag && p.Env == "" {
-				return fmt.Errorf("%s: toggle params are flag-only; positional placement is not meaningful", pwhere)
+				return fmt.Errorf("%s: toggle params require a flag or env; positional placement is not meaningful", pwhere)
 			}
 			if p.Default != "" && p.Default != "true" && p.Default != "false" {
 				return fmt.Errorf("%s: toggle default %q must be \"true\" or \"false\"", pwhere, p.Default)
