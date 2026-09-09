@@ -17,6 +17,8 @@ type Spec struct {
 	Executable string
 	// Args is the complete argument vector (excluding argv[0]).
 	Args []string
+	// Env holds ordered NAME=value overrides; the executor inherits other variables.
+	Env []string
 	// Display is a shell-escaped rendering for the confirmation screen.
 	// It is never used for execution.
 	Display string
@@ -35,6 +37,7 @@ func Build(tool config.Tool, action config.Action, values map[string]string) (Sp
 		val string
 	}
 	var positionals []positional
+	var env, assignments []string
 
 	for _, p := range action.Params {
 		raw, ok := values[p.Key]
@@ -44,6 +47,14 @@ func Build(tool config.Tool, action config.Action, values map[string]string) (Sp
 		v, err := config.ValidateValue(p, raw)
 		if err != nil {
 			return Spec{}, fmt.Errorf("%s: %w", tool.ID, err)
+		}
+		if p.Env != "" {
+			// Empty optional values leave the inherited environment unchanged.
+			if v != "" {
+				env = append(env, p.Env+"="+v)
+				assignments = append(assignments, p.Env+"="+shellQuote(v))
+			}
+			continue
 		}
 		if p.Type == config.ParamToggle {
 			if v == "true" {
@@ -73,10 +84,12 @@ func Build(tool config.Tool, action config.Action, values map[string]string) (Sp
 	}
 
 	full := append([]string{tool.Executable}, args...)
+	display := append(assignments, DisplayString(full))
 	return Spec{
 		Executable: tool.Executable,
 		Args:       args,
-		Display:    DisplayString(full),
+		Env:        env,
+		Display:    strings.Join(display, " "),
 	}, nil
 }
 

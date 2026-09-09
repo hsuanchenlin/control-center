@@ -29,6 +29,8 @@ func TestHelperProcess(t *testing.T) {
 		}
 	}
 	switch args[0] {
+	case "env":
+		fmt.Print(os.Getenv("CC_OVERRIDE") + "|" + os.Getenv("CC_INHERITED"))
 	case "echo":
 		fmt.Println(strings.Join(args[1:], " "))
 	case "err":

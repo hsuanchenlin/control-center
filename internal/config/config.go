@@ -103,6 +103,10 @@ type Param struct {
 	// Flag, when set, maps the value to "--flag value" as separate argv
 	// elements. Toggles emit the flag alone when true.
 	Flag string `toml:"flag"`
+	// Env places a value in the child's environment instead of argv.
+	Env string `toml:"env"`
+	// Multiline uses a text editor; valid only for text parameters.
+	Multiline bool `toml:"multiline"`
 	// Positional, when non-nil, places the value positionally; positional
 	// params are ordered by this index after all flag params.
 	Positional *int `toml:"positional"`
@@ -130,6 +134,9 @@ func DefaultPath() (string, error) {
 // Load reads and validates the manifest at path. A missing file yields a
 // descriptive error naming the expected location.
 func Load(path string) (*Config, error) {
+	if info, err := os.Stat(path); err == nil && info.IsDir() {
+		return LoadDirectory(path)
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -255,6 +262,7 @@ func actionLabel(a *Action, idx int) string {
 func validateParams(where string, params []Param) error {
 	seenKeys := map[string]bool{}
 	seenPositional := map[int]string{}
+	seenEnv := map[string]bool{}
 	for i := range params {
 		p := &params[i]
 		pwhere := fmt.Sprintf("%s param %q", where, paramLabel(p, i))
@@ -276,13 +284,28 @@ func validateParams(where string, params []Param) error {
 			return fmt.Errorf("%s: unknown type %q (want text, select, toggle, number, or path)", pwhere, p.Type)
 		}
 
+		if p.Multiline && p.Type != ParamText {
+			return fmt.Errorf("%s: multiline applies only to text params", pwhere)
+		}
+		if p.Env != "" {
+			if !validEnvName(p.Env) {
+				return fmt.Errorf("%s: invalid environment name %q", pwhere, p.Env)
+			}
+			if seenEnv[p.Env] {
+				return fmt.Errorf("%s: duplicate environment name %q", pwhere, p.Env)
+			}
+			seenEnv[p.Env] = true
+			if p.Flag != "" || p.Positional != nil {
+				return fmt.Errorf("%s: env is mutually exclusive with flag and positional", pwhere)
+			}
+		}
 		hasFlag := p.Flag != ""
 		hasPositional := p.Positional != nil
 		switch {
 		case hasFlag && hasPositional:
 			return fmt.Errorf("%s: set either flag or positional, not both", pwhere)
-		case !hasFlag && !hasPositional:
-			return fmt.Errorf("%s: one of flag or positional is required for argv-safe placement", pwhere)
+		case !hasFlag && !hasPositional && p.Env == "":
+			return fmt.Errorf("%s: one of flag or positional is required (or env for environment placement)", pwhere)
 		}
 		if hasFlag {
 			if !strings.HasPrefix(p.Flag, "-") || len(p.Flag) < 2 || p.Flag == "--" {
@@ -309,7 +332,7 @@ func validateParams(where string, params []Param) error {
 
 		switch p.Type {
 		case ParamToggle:
-			if !hasFlag {
+			if !hasFlag && p.Env == "" {
 				return fmt.Errorf("%s: toggle params are flag-only; positional placement is not meaningful", pwhere)
 			}
 			if p.Default != "" && p.Default != "true" && p.Default != "false" {
@@ -375,6 +398,15 @@ func validateParams(where string, params []Param) error {
 	return nil
 }
 
+func validEnvName(s string) bool {
+	for i, r := range s {
+		if r != '_' && !(r >= 'A' && r <= 'Z') && !(r >= 'a' && r <= 'z') && !(i > 0 && r >= '0' && r <= '9') {
+			return false
+		}
+	}
+	return s != ""
+}
+
 func paramLabel(p *Param, idx int) string {
 	if p.Key != "" {
 		return p.Key
@@ -412,6 +444,9 @@ func InitialValue(p Param) string {
 // value for a non-required, non-positional param yields ("", nil) and is
 // omitted from argv by the caller.
 func ValidateValue(p Param, raw string) (string, error) {
+	if strings.ContainsRune(raw, 0) {
+		return "", fmt.Errorf("%s: value must not contain NUL", p.Label)
+	}
 	if p.Type == ParamToggle {
 		switch raw {
 		case "true":
