@@ -120,7 +120,7 @@ confirmed parameter values are recorded in the local run history (see
 
 | Screen      | Keys                                                                 |
 |-------------|----------------------------------------------------------------------|
-| Palette     | Type to filter tools **and actions** (matches ids, names, descriptions, group, and "tool action" pairs such as `brew upgrade`) · ↑/↓ or Ctrl-P/Ctrl-N/Ctrl-K/Ctrl-J move · Enter select (an action row jumps straight to its form or confirmation) · Esc clear filter · Ctrl-C exit. Empty filter: pinned actions and tools (`[Pinned]`) and recent runs (`[Recent]`) sort to the top; a recent run opens the confirmation screen with its previous values pre-populated. The filter always has focus, so every printable key (including `q`) is literal input. |
+| Palette     | Type to filter tools **and actions** (matches ids, names, descriptions, group, and "tool action" pairs such as `brew upgrade`) · ↑/↓ or Ctrl-P/Ctrl-N/Ctrl-K/Ctrl-J move · Enter select (an action row jumps straight to its form or confirmation) · Esc clear filter · Ctrl-C exit. Empty filter: pinned actions and tools (`[Pinned]`) and recent runs (`[Recent]`, shown with their age such as `2h ago`) sort to the top; a recent run opens the confirmation screen with its previous values pre-populated. The filter always has focus, so every printable key (including `q`) is literal input. |
 | Action      | `j`/`k` or ↑/↓ (Ctrl-N/Ctrl-P, Ctrl-J/Ctrl-K) move · `l`/Enter select · `h`/←/Esc back · Ctrl-C exit |
 | Form        | Type to edit · Tab/Shift-Tab move fields · Enter submit · Esc back (edits preserved) · Ctrl-C exit |
 | Confirm     | `l`/Enter run · `e` copy the command to the clipboard without running · `h`/←/Esc back · Ctrl-C exit |
@@ -163,8 +163,11 @@ Single-letter shortcuts never fire while a text field is focused.
   its tool id, action name, parameter values, and timestamp to
   `$XDG_STATE_HOME/control-center/history.json` (falling back to
   `~/.local/state/control-center/history.json`), bounded to the last 50
-  unique runs and written with owner-only permissions. History rows surface
-  as `[Recent]` on the empty palette and re-run with their previous values.
+  unique runs and written with owner-only permissions. Recording happens at
+  confirmation time, so a run whose child fails or is interrupted is kept
+  too: it surfaces as `[Recent]` with its age (e.g. `2h ago`) on the empty
+  palette and re-runs with its previous values, one key away for a
+  fix-and-retry.
   Do not run actions whose parameter values you would not want in that file;
   delete it at any time to start fresh.
 

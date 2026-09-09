@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/hsuanchenlin/control-center/internal/config"
@@ -100,7 +101,8 @@ func (m Model) paletteItemLine(item paletteItem) string {
 		return itemTags(item, "") + fmt.Sprintf("%s · %s - %s", item.tool.Name, item.action.Name, item.action.Description)
 	case itemRecent:
 		return itemTags(item, recentStyle.Render("[Recent] ")) +
-			fmt.Sprintf("%s · %s - %s", item.tool.Name, item.action.Name, item.action.Description)
+			fmt.Sprintf("%s · %s - %s", item.tool.Name, item.action.Name, item.action.Description) +
+			dimStyle.Render(" · "+relativeAge(m.now(), item.at))
 	default:
 		return itemTags(item, "") + fmt.Sprintf("%s%s - %s", groupTag(item.tool), item.tool.Name, item.tool.Description)
 	}
@@ -113,9 +115,35 @@ func (m Model) paletteItemLineCursor(item paletteItem) string {
 		return itemTags(item, "") + cursorStyle.Render(item.tool.Name+" · "+item.action.Name) + dimStyle.Render(" - "+item.action.Description)
 	case itemRecent:
 		return itemTags(item, recentStyle.Render("[Recent] ")) +
-			cursorStyle.Render(item.tool.Name+" · "+item.action.Name) + dimStyle.Render(" - "+item.action.Description)
+			cursorStyle.Render(item.tool.Name+" · "+item.action.Name) + dimStyle.Render(" - "+item.action.Description+" · "+relativeAge(m.now(), item.at))
 	default:
 		return itemTags(item, "") + groupTag(item.tool) + cursorStyle.Render(item.tool.Name) + dimStyle.Render(" - "+item.tool.Description)
+	}
+}
+
+// now reports the current time, honoring the injected clock.
+func (m Model) now() time.Time {
+	if m.deps.Clock != nil {
+		return m.deps.Clock.Now()
+	}
+	return time.Now()
+}
+
+// relativeAge renders how long ago a recent run happened, compactly:
+// "just now", "5m ago", "2h ago", "3d ago", or the date past a month.
+func relativeAge(now, at time.Time) string {
+	d := now.Sub(at)
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh ago", int(d.Hours()))
+	case d < 30*24*time.Hour:
+		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
+	default:
+		return at.Format("2006-01-02")
 	}
 }
 

@@ -188,6 +188,50 @@ func TestRunIsRecordedAndSurfacedAsRecent(t *testing.T) {
 	}
 }
 
+func TestRecentRowShowsRelativeAge(t *testing.T) {
+	store, err := history.Load(filepath.Join(t.TempDir(), "history.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runAt := time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC)
+	store.Now = func() time.Time { return runAt }
+	if err := store.Record("plain", "status", nil); err != nil {
+		t.Fatal(err)
+	}
+	m := newPhase1Model(t, modelManifest, func(d *Deps) {
+		d.History = store
+		d.Clock = &fakeClock{now: runAt.Add(2 * time.Hour)}
+	})
+	if len(m.items) == 0 || m.items[0].kind != itemRecent {
+		t.Fatalf("items = %v", m.items)
+	}
+	view := m.View()
+	if !strings.Contains(view, "[Recent]") || !strings.Contains(view, "2h ago") {
+		t.Fatalf("view missing recent age:\n%s", view)
+	}
+}
+
+func TestRelativeAge(t *testing.T) {
+	at := time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name string
+		now  time.Time
+		want string
+	}{
+		{"future clamps to just now", at.Add(-time.Hour), "just now"},
+		{"seconds", at.Add(30 * time.Second), "just now"},
+		{"minutes", at.Add(5 * time.Minute), "5m ago"},
+		{"hours", at.Add(2 * time.Hour), "2h ago"},
+		{"days", at.Add(3 * 24 * time.Hour), "3d ago"},
+		{"older than a month shows the date", at.Add(60 * 24 * time.Hour), "2026-09-09"},
+	}
+	for _, tc := range cases {
+		if got := relativeAge(tc.now, at); got != tc.want {
+			t.Errorf("%s: relativeAge = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
 func TestRecentRunReRunsWithPrepopulatedParams(t *testing.T) {
 	store, err := history.Load(filepath.Join(t.TempDir(), "history.json"))
 	if err != nil {

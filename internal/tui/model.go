@@ -925,15 +925,11 @@ func (m Model) updateSavePrompt(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // defaultSaveName prefills the save prompt: control-center-<tool>-<timestamp>.log.
 func (m Model) defaultSaveName() string {
-	now := time.Now()
-	if m.deps.Clock != nil {
-		now = m.deps.Clock.Now()
-	}
 	name := m.tool.ID
 	if name == "" {
 		name = "output"
 	}
-	return fmt.Sprintf("control-center-%s-%s.log", name, now.Format("20060102-150405"))
+	return fmt.Sprintf("control-center-%s-%s.log", name, m.now().Format("20060102-150405"))
 }
 
 // defaultSaveOutput writes content to path, expanding a leading "~".
