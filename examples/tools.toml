@@ -1,19 +1,29 @@
 # control-center example manifest.
 #
 # Copy to ~/.config/control-center/tools.toml and adapt to your machine.
+# Or split complete [[tool]] blocks into tools.d/*.toml alongside tools.toml.
+# Files load main-first, then lexically; tool IDs must be unique across files.
 # Values marked ADAPT are conservative placeholders: check each tool's own
 # `--help` for the exact current syntax before relying on them.
 #
-# Schema summary (see README.md for the full reference):
-#   [[tool]]            id, name, description, group (optional category),
-#                       executable, output ("capture"|"passthrough"),
-#                       pinned (optional; sorts to the top of the idle palette)
-#   [[tool.action]]     name, description, args (fixed argv prefix),
-#                       output (optional per-action override),
-#                       pinned (optional; gets its own row atop the idle palette)
-#   [[tool.action.param]]  key, label, type (text|select|toggle|number|path),
-#                          required, default, choices, min/max, must_exist,
-#                          and exactly one of: flag = "--flag"  or  positional = <index>
+# Schema reference is in README.md.
+#
+# Example parameters to add under an action (adapt to the child's interface):
+# [[tool.action.param]]
+# key = "debug"
+# label = "Debug level"
+# type = "text"
+# env = "DEBUG"
+# default = "1"
+#
+# [[tool.action.param]]
+# key = "body"
+# label = "Message body"
+# type = "text"
+# multiline = true
+# flag = "--body"
+# default = """First line
+# Second line"""
 
 # ===========================================================================
 # System - package management and shell history.

@@ -29,6 +29,8 @@ func TestHelperProcess(t *testing.T) {
 		}
 	}
 	switch args[0] {
+	case "env":
+		fmt.Print(os.Getenv("CC_OVERRIDE") + "|" + os.Getenv("CC_INHERITED"))
 	case "echo":
 		fmt.Println(strings.Join(args[1:], " "))
 	case "err":
@@ -266,7 +268,7 @@ func TestPreCancelledRunsDoNotStartOrReleaseTerminal(t *testing.T) {
 	cancel()
 	started := false
 	r := helperRunner(t)
-	r.StartProcess = func(context.Context, string, []string, io.Writer, io.Writer) (func() (int, error), error) {
+	r.StartProcess = func(ctx context.Context, path string, args []string, env []string, stdout, stderr io.Writer) (func() (int, error), error) {
 		started = true
 		return func() (int, error) { return 0, nil }, nil
 	}
@@ -522,7 +524,7 @@ func TestPassthroughUsesInjectedBoundary(t *testing.T) {
 	r := helperRunner(t)
 	r.StdinIsTerminal = func() bool { return true }
 	spawned := false
-	r.StartPassthrough = func(ctx context.Context, path string, args []string, stdin io.Reader, stdout, stderr io.Writer) (func() (int, error), error) {
+	r.StartPassthrough = func(ctx context.Context, path string, args []string, env []string, stdin io.Reader, stdout, stderr io.Writer) (func() (int, error), error) {
 		spawned = true
 		if !strings.HasSuffix(args[len(args)-1], "fake-mode") {
 			t.Errorf("argv not passed through: %v", args)
@@ -547,7 +549,7 @@ func TestPassthroughUsesInjectedBoundary(t *testing.T) {
 func TestInjectedCaptureInterruptApproximation(t *testing.T) {
 	r := helperRunner(t)
 	ctx, cancel := context.WithCancel(context.Background())
-	r.StartProcess = func(ctx context.Context, path string, args []string, stdout, stderr io.Writer) (func() (int, error), error) {
+	r.StartProcess = func(ctx context.Context, path string, args []string, env []string, stdout, stderr io.Writer) (func() (int, error), error) {
 		return func() (int, error) {
 			<-ctx.Done() // simulate a graceful child exiting 0 on interrupt
 			return 0, nil

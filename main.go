@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -29,7 +30,9 @@ Usage:
   control-center --help                show this help
 
 Configuration lives at ~/.config/control-center/tools.toml (or
-$XDG_CONFIG_HOME/control-center/tools.toml). See the README for the schema.
+$XDG_CONFIG_HOME/control-center/tools.toml), plus tools.d/*.toml alongside it.
+An explicit --config file loads only that file; a directory loads its tools.toml
+and tools.d/*.toml. See the README for the schema.
 `
 
 func main() {
@@ -46,7 +49,7 @@ func run(args []string) int {
 
 	fs := flag.NewFlagSet("control-center", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	configPath := fs.String("config", "", "path to tools.toml (default: ~/.config/control-center/tools.toml)")
+	configPath := fs.String("config", "", "manifest file or directory (default: ~/.config/control-center)")
 	showVersion := fs.Bool("version", false, "print version and exit")
 	showHelp := fs.Bool("help", false, "show help and exit")
 	fs.Usage = func() { fmt.Fprint(os.Stderr, usage) }
@@ -67,6 +70,7 @@ func run(args []string) int {
 	if path == "" {
 		var err error
 		path, err = config.DefaultPath()
+		path = filepath.Dir(path)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "control-center:", err)
 			return 1

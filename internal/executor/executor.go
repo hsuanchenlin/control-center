@@ -133,15 +133,15 @@ type Runner struct {
 	// passthrough; defaults to checking os.Stdin.
 	StdinIsTerminal func() bool
 	// StartProcess, when set, replaces the real exec for capture mode; tests
-	// inject fakes here. It receives the resolved path and argv and returns
-	// a wait function yielding the exit code.
-	StartProcess func(ctx context.Context, path string, args []string, stdout, stderr io.Writer) (wait func() (int, error), err error)
+	// inject fakes here. It receives the resolved path, argv, and env overrides,
+	// and returns a wait function yielding the exit code.
+	StartProcess func(ctx context.Context, path string, args []string, env []string, stdout, stderr io.Writer) (wait func() (int, error), err error)
 	// StartPassthrough, when set, replaces the real exec for passthrough
 	// mode; tests inject fakes here so hermetic tests never spawn real
-	// tools. It receives the resolved path, argv, and terminal streams and
-	// returns a wait function yielding the exit code. Cancellation of ctx
-	// must interrupt the child the same way the real implementation does.
-	StartPassthrough func(ctx context.Context, path string, args []string, stdin io.Reader, stdout, stderr io.Writer) (wait func() (int, error), err error)
+	// tools. It receives the resolved path, argv, env overrides, and terminal
+	// streams and returns a wait function yielding the exit code. Cancellation
+	// of ctx must interrupt the child the same way the real implementation does.
+	StartPassthrough func(ctx context.Context, path string, args []string, env []string, stdin io.Reader, stdout, stderr io.Writer) (wait func() (int, error), err error)
 }
 
 // NewRunner returns a Runner wired to the real OS.
@@ -204,9 +204,9 @@ func (r *Runner) RunCaptureControlled(control *RunControl, spec command.Spec, st
 	var wait func() (int, error)
 	var interrupted *atomic.Bool
 	if r.StartProcess != nil {
-		wait, err = r.StartProcess(control.ctx, path, spec.Args, stdout, stderr)
+		wait, err = r.StartProcess(control.ctx, path, spec.Args, spec.Env, stdout, stderr)
 	} else {
-		wait, interrupted, err = r.startReal(control, path, spec.Args, nil, stdout, stderr)
+		wait, interrupted, err = r.startReal(control, path, spec.Args, spec.Env, nil, stdout, stderr)
 	}
 	if err != nil {
 		return Result{Err: fmt.Errorf("start %q: %w", spec.Executable, err)}
@@ -238,9 +238,13 @@ func wasInterrupted(ctx context.Context, flag *atomic.Bool) bool {
 // startReal starts a real child process. The returned flag reports whether
 // the Cancel closure fired, i.e. the child was interrupted by cancellation;
 // stdin may be nil for capture mode.
-func (r *Runner) startReal(control *RunControl, path string, args []string, stdin io.Reader, stdout, stderr io.Writer) (func() (int, error), *atomic.Bool, error) {
+func (r *Runner) startReal(control *RunControl, path string, args, env []string, stdin io.Reader, stdout, stderr io.Writer) (func() (int, error), *atomic.Bool, error) {
 	interrupted := &atomic.Bool{}
 	cmd := exec.CommandContext(control.ctx, path, args...)
+	if len(env) > 0 {
+		// os/exec keeps the last occurrence of each name, so overrides win.
+		cmd.Env = append(os.Environ(), env...)
+	}
 	// Interrupt first on cancellation; exec kills only after Cancel returns.
 	cmd.Cancel = func() error {
 		interrupted.Store(true)
@@ -326,9 +330,9 @@ func (r *Runner) RunPassthroughControlled(control *RunControl, spec command.Spec
 	var wait func() (int, error)
 	var interrupted *atomic.Bool
 	if r.StartPassthrough != nil {
-		wait, err = r.StartPassthrough(control.ctx, path, spec.Args, stdin, stdout, stderr)
+		wait, err = r.StartPassthrough(control.ctx, path, spec.Args, spec.Env, stdin, stdout, stderr)
 	} else {
-		wait, interrupted, err = r.startReal(control, path, spec.Args, stdin, stdout, stderr)
+		wait, interrupted, err = r.startReal(control, path, spec.Args, spec.Env, stdin, stdout, stderr)
 	}
 	if err != nil {
 		res := Result{Err: fmt.Errorf("start %q: %w", spec.Executable, err), Elapsed: r.now().Sub(start)}

@@ -113,7 +113,7 @@ func newTestModel(t *testing.T) (Model, *fakeClipboard) {
 	clip := &fakeClipboard{}
 	runner := &executor.Runner{
 		LookPath: func(name string) (string, error) { return "/usr/bin/" + name, nil },
-		StartProcess: func(ctx context.Context, path string, args []string, stdout, stderr io.Writer) (func() (int, error), error) {
+		StartProcess: func(ctx context.Context, path string, args []string, env []string, stdout, stderr io.Writer) (func() (int, error), error) {
 			return func() (int, error) { return 0, nil }, nil
 		},
 	}

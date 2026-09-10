@@ -39,8 +39,16 @@ control-center --help
 
 The manifest lives at `~/.config/control-center/tools.toml`
 (`$XDG_CONFIG_HOME/control-center/tools.toml` when `XDG_CONFIG_HOME` is
-set). Override it with `--config <path>`. A complete, annotated example is
-in [`examples/tools.toml`](examples/tools.toml).
+set). The default loader reads that file first, then `tools.d/*.toml` alongside
+it in lexicographical filename order. Each file defines complete tools; duplicate
+tool IDs across files are errors, not overrides. Either the main file or the
+modular directory may be absent, but at least one manifest must exist.
+
+`--config <file>` loads **only that file**. `--config <directory>` loads that
+directory's optional `tools.toml` plus `tools.d/*.toml` (not arbitrary TOML files
+in the directory). `control-center validate` uses the same discovery rules and
+reports errors from all discovered manifests, including source paths.
+A complete, annotated example is in [`examples/tools.toml`](examples/tools.toml).
 
 The manifest is hand-curated: control-center never scans `PATH` or
 auto-discovers tools. Run `control-center validate` after editing.
@@ -77,8 +85,10 @@ choices = ["a", "b"]        # select only
 min = 1                     # number only
 max = 100                   # number only
 must_exist = true           # path only
-flag = "--target"           # exactly one of:
-positional = 0              #   flag mapping or positional index
+multiline = true            # text only; Enter inserts newline, Ctrl-D finishes
+flag = "--target"           # exactly one placement (do not set all three):
+positional = 0              #   positional index
+env = "DEBUG"               #   environment variable name
 ```
 
 Rules enforced by `validate`:
@@ -88,13 +98,19 @@ Rules enforced by `validate`:
 - `group` is optional; when set it must be a single trimmed line with no
   control characters.
 - An action's `output` overrides the tool's `output` for that action only.
-- Every param sets exactly one of `flag` or `positional`.
+- Every param sets exactly one of `flag`, `positional`, or `env`.
+- Environment names match `[A-Za-z_][A-Za-z0-9_]*` and must be unique within
+  an action. Nonempty values override the inherited environment; empty optional
+  values leave it unchanged. Toggles set the literal `true` or `false`.
+  Confirmation and command copy prefix shell-escaped assignments, for example
+  `DEBUG=1 my-tool run`; execution uses `exec.Cmd.Env`, never a shell.
 - Flags must be single tokens starting with `-` (no spaces, no `=`); values
   are always passed as a **separate argv element**. How a child parses a
   value that itself starts with `-` depends on that child's argument parser.
 - Positional params must be `required` (an empty value would silently shift
   every later positional).
-- `toggle` params are flag-only and are emitted only when true.
+- `toggle` params support flags (emitted only when true) or environment placement,
+  not positionals. `multiline = true` applies only to `text` parameters.
 - `select` params need at least one choice; defaults must be among them.
 - `number` defaults must be numeric and within `min`/`max`.
 - Unknown fields are rejected with their TOML key path. Unknown type/output
@@ -105,11 +121,11 @@ Rules enforced by `validate`:
 
 | Type     | Control      | Notes                                                        |
 |----------|--------------|--------------------------------------------------------------|
-| `text`   | text input   | Optional default, required validation.                       |
+| `text`   | text input / multiline editor | Optional default, required validation. `multiline = true` preserves newlines in one value. |
 | `select` | choice list  | Fixed `choices`; optional selects offer `(none)`.            |
-| `toggle` | yes/no       | Emits its `flag` only when true.                             |
+| `toggle` | yes/no       | Emits its `flag` only when true, or sets `env` to `true`/`false`. |
 | `number` | text input   | Numeric parsing with optional `min`/`max`.                   |
-| `path`   | text input   | Leading `~` expands to your home dir; no shell globbing; `must_exist` is checked only when declared. |
+| `path`   | suggested text input | Prefix suggestions update while typing; Ctrl-E accepts. Leading `~` expands for execution while its spelling is preserved in the form. Directories end in `/`; dotfiles appear only for a dot-prefixed basename. Up to 100 suggestions; unreadable directories yield none. No shell globbing; `must_exist` remains enforced. |
 
 There is deliberately **no secret parameter type** - do not put tokens or
 passwords in the manifest or in form fields: manifests are plain text, and
@@ -122,7 +138,7 @@ confirmed parameter values are recorded in the local run history (see
 |-------------|----------------------------------------------------------------------|
 | Palette     | Type to filter tools **and actions** (matches ids, names, descriptions, group, and "tool action" pairs such as `brew upgrade`) · ↑/↓ or Ctrl-P/Ctrl-N/Ctrl-K/Ctrl-J move · Enter select (an action row jumps straight to its form or confirmation) · Esc clear filter · Ctrl-C exit. Empty filter: pinned actions and tools (`[Pinned]`) and recent runs (`[Recent]`, shown with their age such as `2h ago`) sort to the top; a recent run opens the confirmation screen with its previous values pre-populated. The filter always has focus, so every printable key (including `q`) is literal input. |
 | Action      | `j`/`k` or ↑/↓ (Ctrl-N/Ctrl-P, Ctrl-J/Ctrl-K) move · `l`/Enter select · `h`/←/Esc back · Ctrl-C exit |
-| Form        | Type to edit · Tab/Shift-Tab move fields · Enter submit · Esc back (edits preserved) · Ctrl-C exit |
+| Form        | Type to edit · Tab/Shift-Tab move fields · Enter next/submit for single-line fields · Path: Ctrl-E accept suggestion · Multiline text: Enter newline, Ctrl-D next/submit, Shift-Tab previous · Esc back (edits preserved) · Ctrl-C exit |
 | Confirm     | `l`/Enter run · `e` copy the command to the clipboard without running · `h`/←/Esc back · Ctrl-C exit |
 | Output      | Capture: `j`/`k` or ↑/↓ (PgUp/PgDn) scroll · `d`/Ctrl-D and `u`/Ctrl-U half page · `g`/`G` top/bottom · Ctrl-C interrupt the child · Ctrl-C again force-stop and exit after cleanup · once finished: `/` search the output (Enter keep, Esc clear), `n`/`N` next/previous match, `c`/`y` copy the whole output, `s` save it to a file, `q`/`h`/←/Esc back. Passthrough: Ctrl-C belongs to the child; control-center resumes after it exits. |
 

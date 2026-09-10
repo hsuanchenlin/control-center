@@ -131,7 +131,7 @@ func TestValidationErrors(t *testing.T) {
 		{"unsafe flag double dash", manifestWithParam("key='p'\nlabel='P'\ntype='text'\nflag='--'"), "unsafe flag"},
 		{"optional positional", manifestWithParam("key='p'\nlabel='P'\ntype='text'\npositional=0"), "must be required"},
 		{"dup positional", manifestWithParams("key='p'\nlabel='P'\ntype='text'\nrequired=true\npositional=0", "key='q'\nlabel='Q'\ntype='text'\nrequired=true\npositional=0"), "already used"},
-		{"toggle positional", manifestWithParam("key='p'\nlabel='P'\ntype='toggle'\nrequired=true\npositional=0"), "flag-only"},
+		{"toggle positional", manifestWithParam("key='p'\nlabel='P'\ntype='toggle'\nrequired=true\npositional=0"), "flag or env"},
 		{"toggle bad default", manifestWithParam("key='p'\nlabel='P'\ntype='toggle'\nflag='--p'\ndefault='yes'"), "true\" or \"false"},
 		{"toggle choices", manifestWithParam("key='p'\nlabel='P'\ntype='toggle'\nflag='--p'\nchoices=['a']"), "only to select"},
 		{"select no choices", manifestWithParam("key='p'\nlabel='P'\ntype='select'\nflag='--p'"), "at least one choice"},

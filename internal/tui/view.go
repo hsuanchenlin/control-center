@@ -175,7 +175,7 @@ func (m Model) viewForm() string {
 	var b strings.Builder
 	b.WriteString(titleStyle.Render(m.tool.Name+" · "+m.action.Name) + "\n")
 	b.WriteString(m.form.Model.View())
-	b.WriteString("\n" + dimStyle.Render("Tab/Shift-Tab move fields · Enter submit · Esc back · Ctrl-C exit"))
+	b.WriteString("\n" + dimStyle.Render("Tab/Shift-Tab move fields · Enter/Ctrl-D submit · Ctrl-E accept path · Esc back · Ctrl-C exit"))
 	if m.notice != "" {
 		b.WriteString("\n" + errStyle.Render(m.notice))
 	}

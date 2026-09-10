@@ -3,6 +3,7 @@
 package form
 
 import (
+	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/huh"
 	"github.com/hsuanchenlin/control-center/internal/config"
 )
@@ -78,16 +79,31 @@ func New(action config.Action, initial Values) *Form {
 			holder := new(string)
 			*holder = start
 			f.strings[p.Key] = holder
-			fields = append(fields, huh.NewInput().
+			if p.Multiline {
+				fields = append(fields, huh.NewText().Key(p.Key).Title(title).
+					Description(p.Description).Value(holder).Validate(validator(p)))
+				continue
+			}
+			input := huh.NewInput().
 				Key(p.Key).
 				Title(title).
 				Description(p.Description).
 				Value(holder).
-				Validate(validator(p)))
+				Validate(validator(p))
+			if p.Type == config.ParamPath {
+				input.Suggestions(PathSuggestions(start))
+				fields = append(fields, &pathInput{Input: input})
+			} else {
+				fields = append(fields, input)
+			}
 		}
 	}
 
-	f.Model = huh.NewForm(huh.NewGroup(fields...))
+	km := huh.NewDefaultKeyMap()
+	km.Text.NewLine = key.NewBinding(key.WithKeys("enter", "ctrl+j"), key.WithHelp("enter", "new line"))
+	km.Text.Next = key.NewBinding(key.WithKeys("ctrl+d"), key.WithHelp("ctrl+d", "next"))
+	km.Text.Submit = key.NewBinding(key.WithKeys("ctrl+d"), key.WithHelp("ctrl+d", "submit"))
+	f.Model = huh.NewForm(huh.NewGroup(fields...)).WithKeyMap(km)
 	return f
 }
 
